@@ -61,10 +61,11 @@ def action_cargar(engine):
     for path in chosen:
         try:
             rows = wansoft.extract(path)
-            intentados, insertados = insert_lines(engine, rows)
-            ya_estaban = intentados - insertados
-            print(f"  {path.name}: {intentados} строк продаж -> "
-                  f"{insertados} новых, {ya_estaban} уже были в базе")
+            r = insert_lines(engine, rows)
+            nuevos = r["tickets"] - r["tickets_ya_estaban"]
+            print(f"  {path.name}: {r['lineas']} строк / {r['tickets']} чеков -> "
+                  f"{nuevos} новых чеков, {r['tickets_ya_estaban']} уже были "
+                  f"(перезаписаны, без задвоения)")
         except ValueError as e:
             print(f"  ПРОПУСК {path.name}: {e}")
     print("\nГотово.\n")

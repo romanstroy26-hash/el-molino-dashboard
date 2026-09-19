@@ -24,10 +24,11 @@ from extractors import wansoft
 
 def load_file(engine, path: Path) -> None:
     rows = wansoft.extract(path)
-    intentados, insertados = insert_lines(engine, rows)
-    ya_estaban = intentados - insertados
-    print(f"  {path.name}: {intentados} renglones de venta -> "
-          f"{insertados} nuevos, {ya_estaban} ya estaban cargados")
+    r = insert_lines(engine, rows)
+    nuevos = r["tickets"] - r["tickets_ya_estaban"]
+    print(f"  {path.name}: {r['lineas']} renglones / {r['tickets']} tickets -> "
+          f"{nuevos} tickets nuevos, {r['tickets_ya_estaban']} ya estaban "
+          f"(recargados, sin duplicar)")
 
 
 def main():
