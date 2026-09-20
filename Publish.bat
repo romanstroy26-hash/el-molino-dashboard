@@ -10,8 +10,10 @@ rem  Что делает:
 rem    1. Копирует файлы программы из этой папки в папку репозитория
 rem       (ту, которую завёл GitHub Desktop). НЕ копирует .env, базу и
 rem       выгрузки Wansoft -- им в GitHub не место.
-rem    2. Делает коммит и push.
-rem    3. Streamlit Cloud сам замечает push и пересобирает дашборд --
+rem    2. Делает коммит.
+rem    3. Отправляет в GitHub ВСЁ, что ещё не отправлено -- в том числе
+rem       коммиты с прошлых запусков, если тогда отправка сорвалась.
+rem    4. Streamlit Cloud сам замечает отправку и пересобирает дашборд --
 rem       через пару минут новая версия уже в телефоне.
 rem
 rem  Папку репозитория можно поменять здесь (если GitHub Desktop держит
@@ -31,9 +33,7 @@ if not exist "%REPO_DIR%\.git" (
     echo.
     echo Открой GitHub Desktop, посмотри Repository -^> Show in Explorer,
     echo и впиши правильный путь в строку REPO_DIR в начале этого файла.
-    echo.
-    pause
-    exit /b 1
+    goto :fin_error
 )
 
 rem --- Ищем git: сначала обычный, потом тот, что внутри GitHub Desktop ---
@@ -48,9 +48,7 @@ if not defined GIT (
     echo ОШИБКА: не найден git.
     echo Установи GitHub Desktop с https://desktop.github.com либо
     echo обычный Git с https://git-scm.com/download/win и запусти снова.
-    echo.
-    pause
-    exit /b 1
+    goto :fin_error
 )
 
 rem --- Копируем только то, что можно публиковать -------------------------
@@ -59,37 +57,30 @@ rem  .git исключён обязательно: это сам репозит�
 rem  .env -- пароль от базы. el_molino.db и data -- данные о продажах.
 echo Копирую файлы программы...
 robocopy "." "%REPO_DIR%" /E ^
-    /XD ".git" "data" "__pycache__" ".streamlit\cache" "Claude outputs" ^
+    /XD ".git" "data" "__pycache__" "Claude outputs" ^
     /XF ".env" "el_molino.db" "el_molino.db-shm" "el_molino.db-wal" "*.pyc" ^
     /NFL /NDL /NJH /NJS /R:2 /W:2 >nul
 if errorlevel 8 (
     echo ОШИБКА при копировании файлов. Ничего не отправлено.
-    echo.
-    pause
-    exit /b 1
+    goto :fin_error
 )
 
-rem --- Готовим коммит ----------------------------------------------------
+rem --- Готовим коммит, если есть что коммитить ---------------------------
 "%GIT%" -C "%REPO_DIR%" add -A
 if errorlevel 1 (
     echo ОШИБКА: git не смог подготовить изменения.
-    echo.
-    pause
-    exit /b 1
+    goto :fin_error
 )
 
 "%GIT%" -C "%REPO_DIR%" diff --cached --quiet
-if not errorlevel 1 (
-    echo.
-    echo Изменений нет -- в GitHub уже лежит ровно то же самое.
-    echo Отправлять нечего.
-    echo.
-    pause
-    exit /b 0
-)
+if errorlevel 1 goto :hay_cambios
 
+echo Новых изменений в файлах нет.
+goto :revisar_pendientes
+
+:hay_cambios
 echo.
-echo Что отправляется:
+echo Что меняется:
 "%GIT%" -C "%REPO_DIR%" diff --cached --stat
 echo.
 
@@ -99,26 +90,79 @@ if not defined MSG set "MSG=Обновление %DATE% %TIME%"
 "%GIT%" -C "%REPO_DIR%" commit -m "%MSG%" >nul
 if errorlevel 1 (
     echo ОШИБКА: не удалось сделать коммит.
-    echo.
-    pause
-    exit /b 1
+    goto :fin_error
 )
 
-echo Отправляю в GitHub...
-"%GIT%" -C "%REPO_DIR%" push origin main
-if errorlevel 1 (
+rem --- Сколько коммитов ещё НЕ в GitHub ----------------------------------
+rem  Проверять обязательно: коммит мог быть сделан в прошлый раз, а
+rem  отправка тогда сорваться (например, не прошёл вход в GitHub). Без
+rem  этой проверки такой коммит навсегда остался бы лежать на диске, а
+rem  кнопка бодро сообщала бы, что отправлять нечего.
+:revisar_pendientes
+"%GIT%" -C "%REPO_DIR%" fetch origin main >nul 2>&1
+
+rem  Счёт неотправленного пишем во временный файл, а не читаем через
+rem  for /f: там команда начинается с ПУТИ В КАВЫЧКАХ (git внутри GitHub
+rem  Desktop), а cmd в такой конструкции кавычки перекусывает -- команда
+rem  не выполняется, счётчик молча остаётся нулём, и кнопка врёт, будто
+rem  отправлять нечего.
+set "TMPF=%TEMP%\el_molino_pendientes.txt"
+set "PENDIENTES="
+"%GIT%" -C "%REPO_DIR%" rev-list --count origin/main..HEAD > "%TMPF%" 2>nul
+if exist "%TMPF%" set /p PENDIENTES=<"%TMPF%"
+del "%TMPF%" >nul 2>&1
+
+rem  Не смогли посчитать (нет связи, нет ветки в GitHub) -- НЕ молчим и
+rem  не пропускаем: пробуем отправить, пусть git сам скажет, что не так.
+if not defined PENDIENTES goto :enviar
+
+if "%PENDIENTES%"=="0" (
     echo.
-    echo ОШИБКА при отправке. Чаще всего это значит, что нужно один раз
-    echo войти в аккаунт: открой GitHub Desktop и нажми там Push origin --
-    echo он спросит логин. После этого эта кнопка заработает сама.
-    echo.
-    pause
-    exit /b 1
+    echo В GitHub уже лежит ровно то же самое. Отправлять нечего.
+    goto :fin_ok
 )
+
+echo.
+echo Не отправлено в GitHub: %PENDIENTES% коммит^(ов^)
+"%GIT%" -C "%REPO_DIR%" log --oneline origin/main..HEAD
+
+:enviar
+echo.
+echo Отправляю...
+"%GIT%" -C "%REPO_DIR%" push origin main
+if errorlevel 1 goto :fin_push_error
 
 echo.
 echo ГОТОВО. Streamlit Cloud увидит изменения сам и пересоберёт дашборд --
 echo обычно это занимает 1-3 минуты. Потом открой ссылку в телефоне и
 echo нажми "Обновить данные".
+goto :fin_ok
+
+:fin_push_error
+echo.
+echo НЕ ОТПРАВЛЕНО: GitHub не пустил.
+echo.
+echo Почти всегда причина одна: на этом компьютере ещё ни разу не входили
+echo в GitHub из обычного git (GitHub Desktop хранит вход отдельно, и
+echo этой кнопке он не виден).
+echo.
+echo Лечится один раз, любым из двух способов:
+echo.
+echo   1. Запусти этот файл ещё раз и ДОЖДИСЬ окна входа в GitHub --
+echo      оно открывается не сразу. Войди в нём. Больше спрашивать не
+echo      будет: коммит уже сделан и отправится сам.
+echo.
+echo   2. Или открой GitHub Desktop -- он покажет "Push origin",
+echo      нажми её. Коммит уже готов, он просто уедет.
+echo.
+goto :fin_error
+
+:fin_ok
 echo.
 pause
+exit /b 0
+
+:fin_error
+echo.
+pause
+exit /b 1
