@@ -31,11 +31,12 @@ coffee_keywords, редактируется через страницу "Нас�
 уже загруженным данным, не нужно грузить файлы заново.
 """
 
-import datetime as dt
 from pathlib import Path
 from typing import Iterator
 
 import openpyxl
+
+import tiempo
 
 # Índices de columna (0-based), confirmados en la hoja "Detalle de ventas".
 COL_FECHA = 3
@@ -77,7 +78,10 @@ def extract(path: str | Path) -> Iterator[dict]:
         )
     ws = wb["Detalle de ventas"]
     sucursal = _find_sucursal(ws)
-    cargado_en = dt.datetime.now().isoformat(timespec="seconds")
+    # Отметка "когда загрузили" -- тоже по времени Сан-Луис-Потоси, а не
+    # по часам того компьютера, с которого грузят: в базе все даты и
+    # времена местные, мешать их с московскими нельзя.
+    cargado_en = tiempo.sello_de_tiempo()
 
     for i, row in enumerate(ws.iter_rows(values_only=True)):
         if i <= HEADER_ROW_0BASED:
