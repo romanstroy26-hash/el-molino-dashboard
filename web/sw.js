@@ -1,4 +1,4 @@
-const CACHE = "el-molino-club-v8";
+const CACHE = "el-molino-club-v9";
 const ASSETS = ["/", "/styles.css", "/app.js", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
