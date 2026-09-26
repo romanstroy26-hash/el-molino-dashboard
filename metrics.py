@@ -13,39 +13,18 @@ metrics.py -- Блок 4: считает показатели из базы (db.
 
 import datetime as dt
 from collections import defaultdict
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
+import tiempo
 from db import get_coffee_keywords
 
 CAFETERIA_TIPOS = {"CAFETERIA", "FRAPPES"}
 
-# Часовой пояс ПЕКАРЕН, а не того компьютера, где запущена программа.
-#
-# Везде, где программа решает "этот день уже закрылся или магазин ещё
-# торгует", она обязана смотреть на время в Сан-Луис-Потоси -- иначе
-# ответ зависит от того, откуда смотришь. Так и было: на компьютере с
-# московским временем (UTC+3) и в облаке Streamlit (UTC) "сегодня"
-# приходилось на разные даты, и один и тот же дашборд показывал в окне
-# "День к дню" РАЗНЫЕ дни -- локально сравнивал ещё не закрытый день с
-# полным (и рисовал пугающие -50%), а в облаке брал предыдущий.
-#
-# Правильный ответ один и тот же с любого устройства: день закрыт тогда,
-# когда он закрыт ТАМ, где стоят пекарни.
-TZ_NEGOCIO = ZoneInfo("America/Mexico_City")
-
-
-def ahora_negocio() -> dt.datetime:
-    """Текущее время там, где работают пекарни."""
-    return dt.datetime.now(TZ_NEGOCIO)
-
-
-def hoy_negocio() -> dt.date:
-    """Сегодняшняя дата по времени пекарен -- единственное, с чем можно
-    сравнивать даты продаж (они тоже местные, из кассы Wansoft)."""
-    return ahora_negocio().date()
+# "Сегодня" здесь НИКОГДА не берётся из часов компьютера -- только из
+# tiempo.hoy(), то есть по времени Сан-Луис-Потоси. Почему так и что
+# ломалось раньше -- подробно в шапке tiempo.py.
 
 MESES_RU = {
     1: "янв", 2: "фев", 3: "мар", 4: "апр", 5: "май", 6: "июн",
@@ -289,11 +268,11 @@ def resumen_dia(engine: Engine, fecha: str, sucursal: str | None = None) -> dict
     return {
         "fecha": fecha,
         "dia_semana": DIAS_SEMANA_RU[target.weekday()],
-        # Закрыт ли день -- по времени пекарен (см. hoy_negocio). Если нет,
-        # цифры ниже -- это ЧАСТЬ дня: магазин ещё торгует, а выгрузка
-        # Wansoft сделана посреди дня. Дашборд обязан это подписать, иначе
-        # неполный день выглядит как обвал продаж.
-        "dia_cerrado": target != hoy_negocio(),
+        # Закрыт ли день -- по времени Сан-Луис-Потоси (tiempo.hoy()).
+        # Если нет, цифры ниже -- это ЧАСТЬ дня: магазин ещё торгует, а
+        # выгрузка Wansoft сделана посреди дня. Дашборд обязан это
+        # подписать, иначе неполный день выглядит как обвал продаж.
+        "dia_cerrado": target != tiempo.hoy(),
         "num_ordenes": num_ordenes,
         "ventas_totales": round(ventas_totales, 2),
         "cheque_promedio": round(ventas_totales / num_ordenes, 2) if num_ordenes else 0.0,
@@ -603,15 +582,14 @@ def comparacion_semanal(engine: Engine, fecha: str, sucursal: str | None = None)
       justo antes, sin repetir el 11.09 ni el 12.09 en ambos lados).
 
     'Cerrado' = cualquier fecha que NO sea HOY en San Luis Potosí (ver
-    hoy_negocio arriba -- NO el reloj de esta computadora ni el del
-    servidor: el dashboard tiene que dar la misma respuesta abierto desde
-    la panadería, desde Moscú o desde el celular). Como trabajamos
-    postfactum con
+    tiempo.py -- NO el reloj de esta computadora ni el del servidor: el
+    dashboard tiene que dar la misma respuesta abierto desde la panadería,
+    desde Moscú o desde el celular). Como trabajamos postfactum con
     exportaciones de Wansoft, un día anterior a hoy siempre está
     completo; el día de hoy puede seguir vendiendo, así que nunca entra
     en estas comparaciones (ni como día suelto, ni en la suma semanal)."""
     target = dt.date.fromisoformat(fecha)
-    hoy = hoy_negocio()
+    hoy = tiempo.hoy()
     dia_cerrado = target != hoy
 
     resultado: dict = {"fecha": fecha, "dia_cerrado": dia_cerrado}

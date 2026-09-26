@@ -6,3 +6,7 @@ sqlalchemy>=2
 psycopg2-binary
 python-dotenv
 tzdata
+fastapi
+uvicorn[standard]
+httpx
+pytest

@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: el-molino-club
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_TOKEN_SECRET
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
+      - key: CASHIER_API_KEY
+        sync: false
+      - key: LABSMOBILE_USERNAME
+        sync: false
+      - key: LABSMOBILE_API_TOKEN
+        sync: false
