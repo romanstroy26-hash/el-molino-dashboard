@@ -45,6 +45,13 @@ if not defined GIT (
     for /f "delims=" %%i in ('dir /b /s "%LOCALAPPDATA%\GitHubDesktop\git.exe" 2^>nul ^| findstr /i "\\cmd\\git.exe"') do set "GIT=%%i"
 )
 
+if not defined GIT (
+    echo ОШИБКА: не найден git.
+    echo Установи GitHub Desktop с https://desktop.github.com либо
+    echo обычный Git с https://git-scm.com/download/win и запусти снова.
+    goto :fin_error
+)
+
 rem --- Не копируем поверх незавершённого merge в GitHub Desktop -------
 set "TMPU=%TEMP%\el_molino_unmerged.txt"
 "%GIT%" -C "%REPO_DIR%" ls-files -u > "%TMPU%" 2>nul
@@ -59,12 +66,6 @@ if not "%UNMERGED_SIZE%"=="0" (
     echo ОШИБКА: в GitHub Desktop не завершено слияние веток.
     echo Открой репозиторий, заверши или отмени merge и обнови main,
     echo затем снова запусти Publish.bat.
-    goto :fin_error
-)
-if not defined GIT (
-    echo ОШИБКА: не найден git.
-    echo Установи GitHub Desktop с https://desktop.github.com либо
-    echo обычный Git с https://git-scm.com/download/win и запусти снова.
     goto :fin_error
 )
 
