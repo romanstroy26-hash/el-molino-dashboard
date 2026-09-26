@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#173d33"><meta name="description" content="El Molino Club: puntos y recompensas para cada visita.">
+  <link rel="manifest" href="./manifest.webmanifest"><link rel="stylesheet" href="./styles.css"><title>El Molino Club</title>
+</head>
+<body class="customer-page">
+  <main class="shell">
+    <header class="site-header">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M33 8c-14 5-23 17-21 31 2 13 15 21 28 16 13-5 20-18 15-31C50 11 41 7 33 8Z" fill="currentColor"/><path d="M46 13c-4 7-6 13-15 19-9 6-13 11-13 18" fill="none" stroke="#f8f2e6" stroke-width="3" stroke-linecap="round"/></svg></span><span class="brand-wordmark"><strong>EL MOLINO</strong><small>CAFÉ & CLUB</small></span></div>
+      <span class="header-kicker">Un buen día empieza aquí</span>
+    </header>
+
+    <section id="login-view" class="login-layout">
+      <div class="login-story">
+        <p class="eyebrow">BIENVENIDO AL CLUB</p><h1>Tu café sabe<br><em>mejor</em> con puntos.</h1>
+        <p class="story-copy">Cada visita suma. Descubre tus recompensas y disfruta más de cada momento en El Molino.</p>
+        <div class="story-steps"><span><b>01</b> Pide lo que te gusta</span><span><b>02</b> Acumula puntos</span><span><b>03</b> Disfruta un reward</span></div>
+        <div class="coffee-art" aria-hidden="true"><div class="art-ring ring-one"></div><div class="art-ring ring-two"></div><div class="art-bean bean-one"></div><div class="art-bean bean-two"></div><div class="art-bean bean-three"></div><span>♥</span></div>
+      </div>
+      <div class="login-panel card">
+        <div class="panel-topline"><span>01 / 02</span><span>EL MOLINO CLUB</span></div>
+        <h2>Entra a tu cuenta</h2><p class="muted">Usa tu número de teléfono para ver tus puntos y recompensas.</p>
+        <form id="phone-form"><label for="phone">Número de teléfono</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="444 123 4567" required><button class="button-primary">Continuar <span aria-hidden="true">→</span></button></form>
+        <form id="code-form" hidden><label for="code">Código de 6 dígitos</label><input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button class="button-primary">Entrar al Club <span aria-hidden="true">→</span></button><button class="link" type="button" id="change-phone">Usar otro número</button></form>
+        <button id="show-registration" class="link auth-switch" type="button">¿Nuevo en el Club? Regístrate</button>
+        <form id="registration-form" hidden><label for="registration-name">Tu nombre</label><input id="registration-name" type="text" autocomplete="name" required><label for="registration-phone">Número de teléfono</label><input id="registration-phone" type="tel" inputmode="tel" autocomplete="tel" required><label class="signup-consent"><input id="registration-consent" type="checkbox"><span>Quiero recibir novedades y rewards.</span></label><button class="button-primary">Recibir código <span aria-hidden="true">→</span></button></form>
+        <form id="registration-code-form" hidden><label for="registration-code">Código de 6 dígitos</label><input id="registration-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button class="button-primary">Crear mi cuenta <span aria-hidden="true">→</span></button></form>
+        <button id="back-to-login" class="link auth-switch" type="button" hidden>Ya tengo cuenta</button>
+        <p id="login-message" class="message" aria-live="polite"></p><div class="panel-footer">Hecho para tus pausas favoritas.</div>
+      </div>
+    </section>
+
+    <section id="club-view" hidden>
+      <div class="welcome"><div><p class="eyebrow">TU ESPACIO EN EL MOLINO</p><h1>Hola, <span id="customer-name"></span><span class="welcome-dot">.</span></h1><p class="muted">Qué gusto tenerte de vuelta.</p></div><button id="logout" class="link">Cerrar sesión</button></div>
+      <article class="points-card"><div class="points-art" aria-hidden="true"><i></i><i></i><i></i></div><div class="points-content"><p class="eyebrow">TU TARJETA DEL CLUB</p><span class="points-label">Puntos disponibles</span><strong id="points-balance">0</strong><span class="points-hint">Cada visita te acerca a algo delicioso.</span></div><div class="points-stamp">EL<br>MOLINO<br>CLUB</div></article>
+      <nav class="section-nav" aria-label="Secciones del club"><a href="#campaign-section">Para ti</a><a href="#rewards-section">Rewards</a><a href="#purchases-section">Tus compras</a><a href="#redemptions-section">Tus canjes</a><a href="#profile-section">Tu perfil</a></nav>
+      <div class="club-grid"><div class="club-main">
+        <section id="campaign-section" class="content-section" hidden><div class="section-heading"><div><p class="eyebrow">SELECCIONADO PARA TI</p><h2>Algo especial</h2></div><span class="section-rule" aria-hidden="true"></span></div><div id="campaigns" class="campaigns"></div></section>
+        <section id="rewards-section" class="content-section"><div class="section-heading"><div><p class="eyebrow">DISFRUTA MÁS</p><h2>Rewards para ti</h2></div><span class="section-rule" aria-hidden="true"></span></div><div id="rewards" class="rewards"></div><p id="rewards-message" class="message"></p></section>
+        <section id="purchases-section" class="content-section"><div class="section-heading"><div><p class="eyebrow">TUS VISITAS</p><h2>Tus compras</h2></div><span class="section-rule" aria-hidden="true"></span></div><div id="purchases" class="purchases"></div></section>
+        <section id="redemptions-section" class="content-section"><div class="section-heading"><div><p class="eyebrow">TUS BENEFICIOS</p><h2>Tus canjes</h2></div><span class="section-rule" aria-hidden="true"></span></div><div id="redemptions" class="rewards"></div></section>
+      </div><section id="profile-section" class="profile card"><p class="eyebrow">SOBRE TI</p><h2>Tu perfil</h2><p class="muted">Mantén tus datos al día para que el Club se sienta tuyo.</p><form id="profile-form"><label for="profile-name">Nombre</label><input id="profile-name" type="text" required><label for="profile-email">Email</label><input id="profile-email" type="email"><label for="preferred-channel">Canal preferido</label><select id="preferred-channel"><option value="">Sin preferencia</option><option value="whatsapp">WhatsApp</option><option value="sms">SMS</option><option value="email">Email</option></select><label class="checkbox"><input id="marketing-consent" type="checkbox"><span>Quiero recibir novedades y rewards.</span></label><button class="button-primary">Guardar perfil</button><p id="profile-message" class="message" aria-live="polite"></p></form></section></div>
+    </section>
+    <footer class="site-footer"><span>EL MOLINO · CAFÉ & CLUB</span><span>Hecho para disfrutar cada visita.</span></footer>
+  </main>
+  <script src="./app.js" defer></script>
+</body>
+</html>

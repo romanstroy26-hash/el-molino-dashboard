@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="es-MX">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>El Molino · Equipo</title>
+    <style>
+      body{margin:0;background:#f5f2e9;color:#173d33;font:16px Arial,sans-serif}
+      .staff-shell{max-width:1240px;margin:auto;padding:24px}
+      .staff-header{display:flex;align-items:center;justify-content:space-between;gap:20px}
+      .brand{display:inline-flex;align-items:center;gap:12px;text-decoration:none;color:inherit}
+      .brand-mark{display:inline-grid;place-items:center;width:44px;height:44px;flex:none;border-radius:50%;background:#e7eddd;color:#173d33}
+      .brand-mark svg{display:block;width:26px;height:26px}
+      .brand-wordmark strong,.brand-wordmark small{display:block}
+      .staff-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+      .staff-grid>div{min-width:0}.card{padding:26px;margin-bottom:20px;border:1px solid #e3e7dc;border-radius:18px;background:#fffdf8}
+      input,select,textarea{max-width:100%}
+      @media(max-width:720px){.staff-grid{grid-template-columns:1fr}.staff-shell{padding:16px}}
+    </style>
+    <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./staff.css">
+    <script src="./staff.js" defer></script>
+  </head>
+  <body class="staff-page">
+    <main class="staff-shell">
+      <header class="staff-header site-header"><div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M33 8c-14 5-23 17-21 31 2 13 15 21 28 16 13-5 20-18 15-31C50 11 41 7 33 8Z" fill="currentColor"/><path d="M46 13c-4 7-6 13-15 19-9 6-13 11-13 18" fill="none" stroke="#f8f2e6" stroke-width="3" stroke-linecap="round"/></svg></span><span class="brand-wordmark"><strong>EL MOLINO</strong><small>PANEL DEL EQUIPO</small></span></div><a href="./index.html">Ir al Club <span aria-hidden="true">↗</span></a></header>
+      <div class="staff-intro"><div><p class="eyebrow">OPERACIÓN DIARIA</p><h1>Panel del equipo<span class="welcome-dot">.</span></h1><p class="muted">Caja y gerencia, cada una con sus herramientas en un solo lugar.</p></div><div class="staff-intro-mark" aria-hidden="true">EM<br>·</div></div>
+      <nav class="staff-jump" aria-label="Áreas del panel"><a href="#cashier-section">Caja y clientes</a><a href="#purchase-section">Registrar ticket</a><a href="#redemption-section">Entregar reward</a><a href="#manager-section">Gerencia</a></nav>
+      <p class="staff-security">Usa la clave de tu función. Se mantiene en esta página mientras esté abierta.</p>
+      <p id="staff-file-notice" class="staff-file-notice" hidden>Vista previa. Para usar caja y gerencia, abre <strong>Club.bat</strong> y entra en <strong>http://127.0.0.1:8000/staff.html</strong>.</p>
+
+      <section class="staff-grid">
+        <div>
+          <section id="cashier-section" class="card">
+            <p class="eyebrow">01 · ATENCIÓN AL CLIENTE</p><h2>Caja</h2>
+            <label for="cashier-key">Clave de caja</label><input id="cashier-key" type="password" autocomplete="off">
+            <form id="lookup-form">
+              <label for="lookup-phone">Teléfono del cliente</label><input id="lookup-phone" type="tel" required>
+              <button>Buscar cliente</button>
+            </form>
+            <p id="lookup-message" class="message" role="status"></p>
+            <div id="cashier-customer" hidden><strong id="cashier-name"></strong><p><span id="cashier-points"></span> puntos · <span id="cashier-id"></span></p></div>
+            <div id="cashier-purchases" hidden><h3>Últimos tickets</h3><p id="cashier-purchases-message" class="message" role="status"></p><div id="cashier-purchases-list" class="cashier-purchases-list"></div></div>
+          </section>
+          <section id="new-customer-section" class="card" hidden>
+            <p class="eyebrow">NUEVO CLIENTE</p><h2>Registrar al Club</h2>
+            <p class="muted">Pide el nombre y confirma el teléfono con el cliente.</p>
+            <form id="new-customer-form">
+              <label for="new-customer-name">Nombre</label><input id="new-customer-name" autocomplete="name" required maxlength="160">
+              <label for="new-customer-phone">Teléfono</label><input id="new-customer-phone" type="tel" autocomplete="tel" required maxlength="40">
+              <label class="signup-consent"><input id="new-customer-consent" type="checkbox"><span>El cliente acepta recibir novedades y promociones.</span></label>
+              <button>Registrar cliente</button>
+            </form>
+            <p id="new-customer-message" class="message" role="status"></p>
+          </section>
+          <section id="purchase-section" class="card" hidden>
+            <p class="eyebrow">REGISTRO DE VENTA</p><h2>Registrar compra</h2>
+            <form id="purchase-form">
+              <label for="ticket">Número de ticket</label><input id="ticket" required maxlength="120">
+              <div id="purchase-items" class="purchase-items"></div>
+              <button id="add-purchase-item" type="button" class="secondary">+ Añadir producto</button>
+              <p class="purchase-total">Total del ticket <output id="purchase-total">0.00 MXN</output></p>
+              <button id="purchase-submit">Registrar ticket</button>
+            </form>
+            <template id="purchase-item-template"><div class="purchase-item">
+              <div class="purchase-item-heading"><strong>Producto</strong><button type="button" class="remove-purchase-item">Quitar</button></div>
+              <label>Nombre del producto<input class="item-product" required maxlength="180"></label>
+              <div class="two-fields"><label>Cantidad<input class="item-quantity" type="number" min="0.001" step="0.001" value="1" required></label><label>Precio unitario (MXN)<input class="item-price" type="number" min="0" step="0.01" required></label></div>
+            </div></template>
+            <p class="muted">Revisa que el total coincida con el ticket antes de registrarlo.</p>
+            <p id="purchase-message" class="message" role="status"></p>
+          </section>
+          <section id="redemption-section" class="card">
+            <p class="eyebrow">BENEFICIOS DEL CLUB</p><h2>Entregar reward</h2>
+            <form id="redemption-form"><label for="redemption-code">Código de canje del cliente</label><input id="redemption-code" required><button>Verificar código</button></form>
+            <p id="redemption-message" class="message" role="status"></p>
+            <div id="redemption-details" hidden><strong id="redemption-reward"></strong><p><span id="redemption-customer"></span> · <span id="redemption-status"></span></p><button id="fulfill-redemption" type="button">Confirmar entrega</button></div>
+          </section>
+        </div>
+
+        <div>
+          <section id="manager-section" class="card">
+            <p class="eyebrow">02 · CONOCE A TUS CLIENTES</p><h2>Gerencia</h2>
+            <label for="admin-key">Clave de gerencia</label><input id="admin-key" type="password" autocomplete="off">
+            <label for="segment">Segmento</label><select id="segment"><option value="new">Nuevos</option><option value="active">Activos</option><option value="loyal">Frecuentes</option><option value="at_risk">En riesgo</option></select>
+            <button id="load-audience" type="button">Ver audiencia</button>
+            <button id="load-actions" type="button" class="secondary">Ver recomendaciones</button>
+            <p id="manager-message" class="message" role="status"></p>
+            <div id="manager-results" class="staff-results"></div>
+          </section>
+          <section class="card">
+            <p class="eyebrow">RECOMPENSAS</p><h2>Nuevo reward</h2>
+            <form id="reward-form"><label for="reward-name">Nombre</label><input id="reward-name" required><label for="reward-cost">Costo en puntos</label><input id="reward-cost" type="number" min="1" step="1" required><button>Crear reward</button></form>
+            <p id="reward-message" class="message" role="status"></p>
+          </section>
+          <section class="card">
+            <p class="eyebrow">COMUNICACIÓN</p><h2>Campaña por segmento</h2>
+            <form id="campaign-form"><label for="campaign-name">Nombre</label><input id="campaign-name" required><label for="campaign-channel">Canal</label><select id="campaign-channel"><option value="push">Push</option><option value="sms">SMS</option><option value="email">Email</option></select><label for="campaign-text">Mensaje</label><textarea id="campaign-text" rows="3" required></textarea><button>Crear borrador</button></form>
+            <p id="campaign-message" class="message" role="status"></p>
+          </section>
+          <section class="card">
+            <p class="eyebrow">RESULTADOS</p><h2>Campañas</h2>
+            <button id="load-campaigns" type="button">Actualizar lista</button>
+            <p id="campaign-list-message" class="message" role="status"></p>
+            <div id="campaign-list" class="staff-results"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

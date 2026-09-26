@@ -113,7 +113,15 @@ def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
     url = os.getenv("DATABASE_URL")
     if not url:
         url = f"sqlite:///{db_path}"
-    engine = create_engine(url, future=True)
+    # pool_pre_ping -- перед тем как отдать соединение из пула, тихо
+    # проверяет его коротким запросом. Без этого долго живущий процесс
+    # (дашборд, который никто не закрывает по многу часов, или
+    # vigilar.py, который вообще не останавливается) рано или поздно
+    # получает соединение, которое незаметно оборвал облачный пулер
+    # (Supabase Session pooler закрывает простаивающие соединения сам) --
+    # и падает с невнятной сетевой ошибкой на ровном месте. На SQLite
+    # это же самое просто ничего не стоит.
+    engine = create_engine(url, future=True, pool_pre_ping=True)
     metadata.create_all(engine)
     _migrate_schema(engine)
     _crear_indices(engine)

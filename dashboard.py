@@ -42,6 +42,7 @@ import streamlit as st
 
 from db import DEFAULT_DB_PATH, get_coffee_keywords, get_engine, replace_coffee_keywords
 import metrics
+import tiempo
 
 # Палитра дашборда -- взята из образца (лесная зелень, тёплое золото,
 # кремовый текст) и прогнана через валидатор скилла dataviz: пара
@@ -53,6 +54,21 @@ import metrics
 # (было оранжевым).
 COLOR_PRIMARIO = "#B07E22"
 COLOR_SECUNDARIO = "#199E70"
+
+# Третий цвет -- для страницы "Доля кофе", где кофе, фраппе и остальные
+# напитки показаны одновременно (структура выручки напитков, три
+# категории рядом). Фиолетовый выбран специально не из тёплой gold-семьи
+# (чтобы не путаться с золотом = "кофе"/деньги) и не из зелёно-бирюзовой
+# (чтобы не путаться с бирюзой = "остальные напитки"/штуки в других
+# графиках этой же страницы). Проверено ТЕМ ЖЕ методом, что и пара
+# золото/бирюза выше -- шестью проверками скилла dataviz (диапазон
+# светлоты, порог насыщенности, различимость при дальтонизме и при
+# обычном зрении, контраст с фоном), все три цвета разом (не только
+# попарно с соседями -- строже: каждый с каждым), на обоих реальных фонах
+# графиков этого дашборда (#FBF8F2 светлый / #16211D тёмный). Node.js на
+# компьютере нет -- проверка сделана тем же алгоритмом (Machado-Oliveira-
+# Fernandes 2009), портированным в Python на время проверки, а не на глаз.
+COLOR_FRAPPE = "#7C5CBF"
 
 # Для графиков "прогноз и факт" -- отдельная пара: факт (сегодняшние
 # реальные деньги/штуки) -- то же самое золото, самое важное на графике;
@@ -633,10 +649,10 @@ def page_home():
     if not resumen["dia_cerrado"]:
         st.caption(
             f"⏳ Этот день ещё НЕ ЗАКРЫТ -- в Сан-Луис-Потоси сейчас "
-            f"{metrics.ahora_negocio().strftime('%d.%m, %H:%M')}, магазин "
-            f"ещё торгует, и в выгрузке только часть дня. Цифры ниже -- "
-            f"неполные. Окна сравнения справа это учитывают: они считают "
-            f"по последнему ЗАКРЫТОМУ дню."
+            f"{tiempo.etiqueta()}, магазин ещё торгует, и в выгрузке "
+            f"только часть дня. Цифры ниже -- неполные. Окна сравнения "
+            f"справа это учитывают: они считают по последнему ЗАКРЫТОМУ "
+            f"дню."
         )
 
     # Слева -- все цифры за день (в две строки: сначала общие цифры, потом
@@ -722,8 +738,44 @@ def page_settings():
 # =============================================================================
 # Страница "Дашборд"
 # =============================================================================
+# Четыре категории -- ВЕЗДЕ в этом фиксированном порядке (карточки,
+# график, таблица, цвета): "Напитки" -- приглушённый серо-зелёный
+# COLOR_TIPICO, та же роль, что и на странице "Продажи по часам" (общий
+# фон/итог-конверт, на который накладываются цветные составляющие), цвет
+# переиспользован, а не придуман новый. Кофе/Фраппе/Остальные напитки --
+# три уже проверенных цвета (см. COLOR_FRAPPE выше по файлу).
+_KATEGORII_NAPITKOV = ["Напитки", "Кофе", "Фраппе", "Остальные напитки"]
+_COLOR_KATEGORII = {
+    "Напитки": COLOR_TIPICO, "Кофе": COLOR_PRIMARIO,
+    "Фраппе": COLOR_FRAPPE, "Остальные напитки": COLOR_SECUNDARIO,
+}
+
+# Три измерения одних и тех же четырёх категорий -- переключатель в
+# фильтрах меняет ТОЛЬКО то, какие колонки df превращаются в "valor" для
+# общего графика; сами категории и их цвета не меняются, поэтому глазами
+# удобно сравнивать один и тот же график в разных измерениях.
+_MEDIDAS = {
+    "Доля, % от продаж": {
+        "columnas": {"Напитки": "bebidas_pct", "Кофе": "cafe_pct",
+                     "Фраппе": "frappe_pct", "Остальные напитки": "otras_bebidas_pct"},
+        "formato": ".1f", "titulo_eje": "%",
+    },
+    "Выручка, $": {
+        "columnas": {"Напитки": "bebidas_total", "Кофе": "cafe_total",
+                     "Фраппе": "frappe_total", "Остальные напитки": "otras_bebidas_total"},
+        "formato": ",.0f", "titulo_eje": "$",
+    },
+    "Штуки, шт": {
+        "columnas": {"Напитки": "unidades_bebidas", "Кофе": "unidades_cafe",
+                     "Фраппе": "unidades_frappe",
+                     "Остальные напитки": "unidades_otras_bebidas"},
+        "formato": ",.0f", "titulo_eje": "шт",
+    },
+}
+
+
 def page_dashboard():
-    st.title("☕ El Molino -- доля кофе в продажах")
+    st.title("🥤 Доля напитков: кофе, фраппе и остальное")
     st.caption(f"База данных: {_db_label()}")
 
     sucursales = _cache_sucursales(engine)
@@ -740,15 +792,20 @@ def page_dashboard():
     opcion_sucursal = st.sidebar.selectbox("Точка", ["Все точки"] + sucursales, index=0)
     sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
 
+    medida_label = st.sidebar.radio("Что показывать", list(_MEDIDAS.keys()), index=0)
+    medida = _MEDIDAS[medida_label]
+
     granularidad_label = st.sidebar.radio(
         "Разбивка по периодам",
-        ["По дням", "По декадам (10 дней)", "По кинсенам (15 дней)"],
-        index=1,
+        ["По дням", "По декадам (10 дней)", "По кинсенам (15 дней)", "По месяцам"],
+        index=3,  # по умолчанию -- месяцы: удобнее всего смотреть динамику
+                  # долей за долгий период
     )
     granularidad = {
         "По дням": "dia",
         "По декадам (10 дней)": "decada",
         "По кинсенам (15 дней)": "quincena",
+        "По месяцам": "mes",
     }[granularidad_label]
 
     rango = _cache_rango_fechas(engine, sucursal_filtro)
@@ -771,52 +828,108 @@ def page_dashboard():
     df = pd.DataFrame(filas)
     df["период"] = df["etiqueta"] + " " + df["anio"].astype(str).str[2:]
 
-    # ---- Верхние цифры (KPI) -------------------------------------------------
-    ventas_total = df["ventas_totales"].sum()
-    cafe_total = df["cafe_total"].sum()
-    doля_dinero = 100 * cafe_total / ventas_total if ventas_total else 0
-    unid_total = df["unidades_totales"].sum()
-    unid_cafe = df["unidades_cafe"].sum()
-    doля_shtuki = 100 * unid_cafe / unid_total if unid_total else 0
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Продажи всего", f"{ventas_total:,.0f} $")
-    c2.metric("Доля кофе, % (в деньгах)", f"{doля_dinero:.1f}%")
-    c3.metric("Продано кофе, шт", f"{unid_cafe:,.0f}")
-    c4.metric("Доля кофе, % (в штуках)", f"{doля_shtuki:.1f}%")
-
-    # ---- График 1: доля % (деньги vs штуки) ----------------------------------
-    st.subheader("Доля кофе, % -- в деньгах против штук")
-    st.line_chart(
-        df.set_index("период")[["cafe_pct", "unidades_cafe_pct"]].rename(
-            columns={"cafe_pct": "% в деньгах", "unidades_cafe_pct": "% в штуках"}
-        ),
-        color=[COLOR_PRIMARIO, COLOR_SECUNDARIO],
+    st.caption(
+        "«Напитки» здесь -- это группы меню CAFETERIA и FRAPPES (кофе, чай, "
+        "матча, фраппе...), без учёта выпечки и бутилированных REFRESCOS. "
+        "«Кофе», «Фраппе» и «Остальные напитки» НЕ пересекаются -- кофейный "
+        "фраппе (например, F. Moka + Espresso) учтён только в «Кофе» -- "
+        "поэтому втроём они в точности складываются в «Напитки»."
     )
 
-    # ---- График 2: штуки кофе по периодам -------------------------------------
-    st.subheader("Продано кофе, шт")
-    st.bar_chart(
-        df.set_index("период")[["unidades_cafe"]].rename(columns={"unidades_cafe": "шт"}),
-        color=COLOR_SECUNDARIO,
+    # ---- Агрегаты за весь выбранный диапазон (для карточек) ------------------
+    # Проценты для карточек считаем заново от СУММ (а не средним самих
+    # процентов по периодам) -- иначе долгий диапазон исказился бы средним
+    # арифметическим долей вместо честной доли от общей суммы.
+    ventas_total = df["ventas_totales"].sum()
+    dinero = {c: df[col].sum() for c, col in _MEDIDAS["Выручка, $"]["columnas"].items()}
+    shtuki = {c: df[col].sum() for c, col in _MEDIDAS["Штуки, шт"]["columnas"].items()}
+    pct_de_ventas = {c: (100 * v / ventas_total if ventas_total else 0.0) for c, v in dinero.items()}
+
+    # ---- KPI: 4 категории рядом, в измерении из фильтра ----------------------
+    st.subheader("Напитки в общих продажах")
+    tarjetas = st.columns(4)
+    for col, cat in zip(tarjetas, _KATEGORII_NAPITKOV):
+        if medida_label == "Доля, % от продаж":
+            valor_txt = f"{pct_de_ventas[cat]:.1f}%"
+        elif medida_label == "Выручка, $":
+            valor_txt = f"{dinero[cat]:,.0f} $"
+        else:
+            valor_txt = f"{shtuki[cat]:,.0f} шт"
+        col.metric(cat, valor_txt)
+    st.caption(f"Продажи всего (все категории меню, не только напитки): {ventas_total:,.0f} $")
+
+    if dinero["Фраппе"]:
+        st.caption(
+            f"Кофе : Фраппе = {dinero['Кофе'] / dinero['Фраппе']:.1f} : 1 "
+            f"(во сколько раз выручка кофе больше выручки фраппе)."
+        )
+    else:
+        st.caption("За выбранный период фраппе не продавались -- соотношение посчитать не из чего.")
+
+    # ---- ОБЩИЙ график: 4 категории, измерение -- из фильтра слева -----------
+    st.subheader(f"Динамика: {medida_label.lower()}")
+    largo = df.melt(
+        id_vars=["период", "periodo_inicio"],
+        value_vars=list(medida["columnas"].values()),
+        var_name="_col", value_name="valor",
+    )
+    col_a_cat = {v: k for k, v in medida["columnas"].items()}
+    largo["categoria"] = largo["_col"].map(col_a_cat)
+
+    grafico = alt.Chart(largo).mark_line(point=True, strokeWidth=2.5).encode(
+        x=alt.X("periodo_inicio:T", title=None,
+                axis=alt.Axis(labelExpr="timeFormat(datum.value, '%b %y')")),
+        y=alt.Y("valor:Q", title=medida["titulo_eje"]),
+        color=alt.Color(
+            "categoria:N",
+            scale=alt.Scale(domain=_KATEGORII_NAPITKOV,
+                             range=[_COLOR_KATEGORII[c] for c in _KATEGORII_NAPITKOV]),
+            legend=alt.Legend(title=None, orient="bottom"),
+        ),
+        strokeDash=alt.condition(
+            alt.datum.categoria == "Напитки", alt.value([5, 4]), alt.value([1, 0]),
+        ),
+        tooltip=[
+            alt.Tooltip("период:N", title="Период"),
+            alt.Tooltip("categoria:N", title="Категория"),
+            alt.Tooltip("valor:Q", title=medida_label, format=medida["formato"]),
+        ],
+    ).properties(height=380)
+    st.altair_chart(grafico, width="stretch")
+    st.caption(
+        "«Напитки» (пунктирная линия) -- это ровно сумма трёх остальных: "
+        "кофе + фраппе + остальные напитки, в любом измерении слева."
     )
 
     # ---- Таблица ---------------------------------------------------------------
-    with st.expander("Таблица (данные графиков выше)"):
+    with st.expander("Таблица (данные графика выше, все измерения сразу)"):
         st.dataframe(
-            df[["период", "ventas_totales", "cafe_total", "cafe_pct",
-                "unidades_totales", "unidades_cafe", "unidades_cafe_pct"]]
+            df[["период", "ventas_totales",
+                "bebidas_total", "bebidas_pct", "unidades_bebidas",
+                "cafe_total", "cafe_pct", "cafe_pct_bebidas", "unidades_cafe",
+                "frappe_total", "frappe_pct", "frappe_pct_bebidas", "unidades_frappe",
+                "otras_bebidas_total", "otras_bebidas_pct", "otras_bebidas_pct_bebidas",
+                "unidades_otras_bebidas"]]
             .rename(columns={
-                "ventas_totales": "Продажи всего", "cafe_total": "Продажи кофе",
-                "cafe_pct": "Доля, % ($)", "unidades_totales": "Ед. всего",
-                "unidades_cafe": "Ед. кофе", "unidades_cafe_pct": "Доля, % (шт)",
+                "ventas_totales": "Продажи всего, $",
+                "bebidas_total": "Напитки, $", "bebidas_pct": "Напитки, % от продаж",
+                "unidades_bebidas": "Напитки, шт",
+                "cafe_total": "Кофе, $", "cafe_pct": "Кофе, % от продаж",
+                "cafe_pct_bebidas": "Кофе, % от напитков", "unidades_cafe": "Кофе, шт",
+                "frappe_total": "Фраппе, $", "frappe_pct": "Фраппе, % от продаж",
+                "frappe_pct_bebidas": "Фраппе, % от напитков", "unidades_frappe": "Фраппе, шт",
+                "otras_bebidas_total": "Остальные напитки, $",
+                "otras_bebidas_pct": "Остальные напитки, % от продаж",
+                "otras_bebidas_pct_bebidas": "Остальные напитки, % от напитков",
+                "unidades_otras_bebidas": "Остальные напитки, шт",
             }),
             width="stretch",
         )
 
     st.caption(
         "Источник: Wansoft 'Reporte Detalle De Ventas'. Список слов для "
-        "распознавания кофе -- на странице «Настройки» слева."
+        "распознавания кофе -- на странице «Настройки» слева. Фраппе "
+        "определяется по группе меню FRAPPES, а не по ключевым словам."
     )
 
 
@@ -1008,6 +1121,13 @@ st.sidebar.caption(
      if engine.url.drivername.startswith("sqlite")
      else f"☁️ Данные: облако ({engine.url.host.split('.')[0]})")
 )
+
+# Часы пекарен -- видны на КАЖДОЙ странице. Весь дашборд считает "сегодня"
+# и "закрыт ли день" только по этому времени (см. tiempo.py), поэтому оно
+# должно быть на виду: открыв страницу из Москвы в три часа ночи, сразу
+# видно, что в Сан-Луис-Потоси ещё вечер вчерашнего дня, и никакого
+# противоречия в цифрах нет.
+st.sidebar.caption(f"🕐 Сан-Луис-Потоси: {tiempo.etiqueta()}")
 
 if page == "Главная":
     page_home()

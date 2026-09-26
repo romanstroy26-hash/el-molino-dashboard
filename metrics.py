@@ -13,39 +13,18 @@ metrics.py -- Блок 4: считает показатели из базы (db.
 
 import datetime as dt
 from collections import defaultdict
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
+import tiempo
 from db import get_coffee_keywords
 
 CAFETERIA_TIPOS = {"CAFETERIA", "FRAPPES"}
 
-# Часовой пояс ПЕКАРЕН, а не того компьютера, где запущена программа.
-#
-# Везде, где программа решает "этот день уже закрылся или магазин ещё
-# торгует", она обязана смотреть на время в Сан-Луис-Потоси -- иначе
-# ответ зависит от того, откуда смотришь. Так и было: на компьютере с
-# московским временем (UTC+3) и в облаке Streamlit (UTC) "сегодня"
-# приходилось на разные даты, и один и тот же дашборд показывал в окне
-# "День к дню" РАЗНЫЕ дни -- локально сравнивал ещё не закрытый день с
-# полным (и рисовал пугающие -50%), а в облаке брал предыдущий.
-#
-# Правильный ответ один и тот же с любого устройства: день закрыт тогда,
-# когда он закрыт ТАМ, где стоят пекарни.
-TZ_NEGOCIO = ZoneInfo("America/Mexico_City")
-
-
-def ahora_negocio() -> dt.datetime:
-    """Текущее время там, где работают пекарни."""
-    return dt.datetime.now(TZ_NEGOCIO)
-
-
-def hoy_negocio() -> dt.date:
-    """Сегодняшняя дата по времени пекарен -- единственное, с чем можно
-    сравнивать даты продаж (они тоже местные, из кассы Wansoft)."""
-    return ahora_negocio().date()
+# "Сегодня" здесь НИКОГДА не берётся из часов компьютера -- только из
+# tiempo.hoy(), то есть по времени Сан-Луис-Потоси. Почему так и что
+# ломалось раньше -- подробно в шапке tiempo.py.
 
 MESES_RU = {
     1: "янв", 2: "фев", 3: "мар", 4: "апр", 5: "май", 6: "июн",
@@ -77,7 +56,16 @@ def _periodo_quincena(d: dt.date):
     return start, end, f"16-{end.day} {m}"
 
 
-GRANULARIDADES = {"dia": _periodo_dia, "decada": _periodo_decada, "quincena": _periodo_quincena}
+def _periodo_mes(d: dt.date):
+    start = dt.date(d.year, d.month, 1)
+    end = (dt.date(d.year, d.month + 1, 1) - dt.timedelta(days=1)) if d.month < 12 else dt.date(d.year, 12, 31)
+    return start, end, MESES_RU[d.month]
+
+
+GRANULARIDADES = {
+    "dia": _periodo_dia, "decada": _periodo_decada, "quincena": _periodo_quincena,
+    "mes": _periodo_mes,
+}
 
 
 def is_coffee(platillo: str, tipo_grupo: str, keywords: list[str]) -> bool:
@@ -114,9 +102,33 @@ def rango_fechas(engine: Engine, sucursal: str | None = None) -> tuple[str, str]
 
 def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = None,
                        desde: str | None = None, hasta: str | None = None) -> list[dict]:
-    """Doля кофе por periodo (dia/decada/quincena), agregando desde la
-    base. sucursal=None -> todas las sucursales juntas. desde/hasta =
-    'YYYY-MM-DD' (opcional)."""
+    """Aналитика напитков por periodo (dia/decada/quincena/mes), agregando
+    desde la base. sucursal=None -> todas las sucursales juntas. desde/hasta
+    = 'YYYY-MM-DD' (opcional).
+
+    Cuatro categorías, SIEMPRE la misma partición limpia (sin solapar --
+    para que el dashboard pueda sumar "café + frappé + otras bebidas" y
+    obtener exactamente "bebidas", en dinero, en % o en unidades, sin
+    explicar un doble conteo cada vez):
+
+      - bebidas   -- TODA la categoría "напитки" (CAFETERIA + FRAPPES).
+      - cafe      -- caliente+frío+frappé-con-café mezclados (is_coffee
+                     arriba) -- un frappé con espresso (F. Moka + Espresso)
+                     cuenta aquí, no en "frappe".
+      - frappe    -- SOLO frappé SIN café (frutas, malteadas...). Antes
+                     esta función también devolvía frappe_total = TODA la
+                     categoría FRAPPES (con café incluido) para comparar
+                     "cómo rinde el menú de frappés" aparte de "cuánto
+                     café se vende"; se quitó porque dos preguntas
+                     distintas sobre los mismos pesos, en el mismo
+                     gráfico, resultaban más confuso que útil -- si hace
+                     falta esa vista, folder aparte.
+      - otras     -- resto de CAFETERIA que no es café (chai, matcha,
+                     taro, limonada, chocolate...).
+
+    café + frappe + otras == bebidas, exactamente, en las tres medidas
+    (dinero, % de ventas totales, unidades) -- por construcción, no por
+    redondeo."""
     fn = GRANULARIDADES[granularidad]
     keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
 
@@ -135,8 +147,12 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
 
     ventas = defaultdict(float)
     cafe = defaultdict(float)
+    frappe = defaultdict(float)         # FRAPPES sin café -- ver docstring
+    otras_bebidas = defaultdict(float)  # CAFETERIA que no es café
     unid_ventas = defaultdict(float)
     unid_cafe = defaultdict(float)
+    unid_frappe = defaultdict(float)
+    unid_otras_bebidas = defaultdict(float)
     meta = {}
 
     with engine.connect() as conn:
@@ -148,21 +164,61 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
             meta[key] = (start, end, etiqueta, d.year)
             ventas[key] += row["importe"]
             unid_ventas[key] += row["cantidad"]
-            if is_coffee(row["platillo"], row["tipo_grupo"], keywords):
+
+            es_cafe = is_coffee(row["platillo"], row["tipo_grupo"], keywords)
+            if es_cafe:
                 cafe[key] += row["importe"]
                 unid_cafe[key] += row["cantidad"]
+            elif row["tipo_grupo"] == "FRAPPES":
+                frappe[key] += row["importe"]
+                unid_frappe[key] += row["cantidad"]
+            elif row["tipo_grupo"] == "CAFETERIA":
+                otras_bebidas[key] += row["importe"]
+                unid_otras_bebidas[key] += row["cantidad"]
 
     salida = []
     for key in sorted(ventas, key=lambda k: k[0]):
         start, end, etiqueta, anio = meta[key]
-        tot, cof = ventas[key], cafe.get(key, 0.0)
-        u_tot, u_cof = unid_ventas[key], unid_cafe.get(key, 0.0)
+        tot = ventas[key]
+        cof, fra, otr = cafe.get(key, 0.0), frappe.get(key, 0.0), otras_bebidas.get(key, 0.0)
+        beb = cof + fra + otr  # = toda CAFETERIA + toda FRAPPES, sin duplicar
+
+        u_tot = unid_ventas[key]
+        u_cof = unid_cafe.get(key, 0.0)
+        u_fra = unid_frappe.get(key, 0.0)
+        u_otr = unid_otras_bebidas.get(key, 0.0)
+        u_beb = u_cof + u_fra + u_otr
+
+        def pct(parte, base):
+            return round(100 * parte / base, 2) if base else 0.0
+
         salida.append({
             "periodo_inicio": start, "periodo_fin": end, "etiqueta": etiqueta, "anio": anio,
-            "ventas_totales": round(tot, 2), "cafe_total": round(cof, 2),
-            "cafe_pct": round(100 * cof / tot, 2) if tot else 0.0,
-            "unidades_totales": round(u_tot, 2), "unidades_cafe": round(u_cof, 2),
-            "unidades_cafe_pct": round(100 * u_cof / u_tot, 2) if u_tot else 0.0,
+            # -- dinero, $ --
+            "ventas_totales": round(tot, 2),
+            "bebidas_total": round(beb, 2),
+            "cafe_total": round(cof, 2),
+            "frappe_total": round(fra, 2),
+            "otras_bebidas_total": round(otr, 2),
+            # -- доля от ОБЩИХ продаж, % (las cuatro sobre la MISMA base,
+            #    para que sean comparables directamente en un solo gráfico) --
+            "bebidas_pct": pct(beb, tot),
+            "cafe_pct": pct(cof, tot),
+            "frappe_pct": pct(fra, tot),
+            "otras_bebidas_pct": pct(otr, tot),
+            # -- доля от выручки НАПИТКОВ, % (para "¿qué tan grande es el
+            #    café DENTRO del menú de bebidas?", distinto de "% de
+            #    todas las ventas") --
+            "cafe_pct_bebidas": pct(cof, beb),
+            "frappe_pct_bebidas": pct(fra, beb),
+            "otras_bebidas_pct_bebidas": pct(otr, beb),
+            # -- unidades, шт --
+            "unidades_totales": round(u_tot, 2),
+            "unidades_bebidas": round(u_beb, 2),
+            "unidades_cafe": round(u_cof, 2),
+            "unidades_frappe": round(u_fra, 2),
+            "unidades_otras_bebidas": round(u_otr, 2),
+            "unidades_cafe_pct": pct(u_cof, u_tot),
         })
     return salida
 
@@ -289,11 +345,11 @@ def resumen_dia(engine: Engine, fecha: str, sucursal: str | None = None) -> dict
     return {
         "fecha": fecha,
         "dia_semana": DIAS_SEMANA_RU[target.weekday()],
-        # Закрыт ли день -- по времени пекарен (см. hoy_negocio). Если нет,
-        # цифры ниже -- это ЧАСТЬ дня: магазин ещё торгует, а выгрузка
-        # Wansoft сделана посреди дня. Дашборд обязан это подписать, иначе
-        # неполный день выглядит как обвал продаж.
-        "dia_cerrado": target != hoy_negocio(),
+        # Закрыт ли день -- по времени Сан-Луис-Потоси (tiempo.hoy()).
+        # Если нет, цифры ниже -- это ЧАСТЬ дня: магазин ещё торгует, а
+        # выгрузка Wansoft сделана посреди дня. Дашборд обязан это
+        # подписать, иначе неполный день выглядит как обвал продаж.
+        "dia_cerrado": target != tiempo.hoy(),
         "num_ordenes": num_ordenes,
         "ventas_totales": round(ventas_totales, 2),
         "cheque_promedio": round(ventas_totales / num_ordenes, 2) if num_ordenes else 0.0,
@@ -603,15 +659,14 @@ def comparacion_semanal(engine: Engine, fecha: str, sucursal: str | None = None)
       justo antes, sin repetir el 11.09 ni el 12.09 en ambos lados).
 
     'Cerrado' = cualquier fecha que NO sea HOY en San Luis Potosí (ver
-    hoy_negocio arriba -- NO el reloj de esta computadora ni el del
-    servidor: el dashboard tiene que dar la misma respuesta abierto desde
-    la panadería, desde Moscú o desde el celular). Como trabajamos
-    postfactum con
+    tiempo.py -- NO el reloj de esta computadora ni el del servidor: el
+    dashboard tiene que dar la misma respuesta abierto desde la panadería,
+    desde Moscú o desde el celular). Como trabajamos postfactum con
     exportaciones de Wansoft, un día anterior a hoy siempre está
     completo; el día de hoy puede seguir vendiendo, así que nunca entra
     en estas comparaciones (ni como día suelto, ni en la suma semanal)."""
     target = dt.date.fromisoformat(fecha)
-    hoy = hoy_negocio()
+    hoy = tiempo.hoy()
     dia_cerrado = target != hoy
 
     resultado: dict = {"fecha": fecha, "dia_cerrado": dia_cerrado}
