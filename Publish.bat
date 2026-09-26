@@ -13,8 +13,8 @@ rem       выгрузки Wansoft -- им в GitHub не место.
 rem    2. Делает коммит.
 rem    3. Отправляет в GitHub ВСЁ, что ещё не отправлено -- в том числе
 rem       коммиты с прошлых запусков, если тогда отправка сорвалась.
-rem    4. Streamlit Cloud сам замечает отправку и пересобирает дашборд --
-rem       через пару минут новая версия уже в телефоне.
+rem    4. Облачные сервисы получают новую версию из GitHub. Club в Render
+rem       может потребовать Manual Deploy -^> Deploy latest commit.
 rem
 rem  Папку репозитория можно поменять здесь (если GitHub Desktop держит
 rem  её в другом месте):
@@ -43,6 +43,23 @@ set "GIT="
 where git >nul 2>&1 && set "GIT=git"
 if not defined GIT (
     for /f "delims=" %%i in ('dir /b /s "%LOCALAPPDATA%\GitHubDesktop\git.exe" 2^>nul ^| findstr /i "\\cmd\\git.exe"') do set "GIT=%%i"
+)
+
+rem --- Не копируем поверх незавершённого merge в GitHub Desktop -------
+set "TMPU=%TEMP%\el_molino_unmerged.txt"
+"%GIT%" -C "%REPO_DIR%" ls-files -u > "%TMPU%" 2>nul
+if errorlevel 1 (
+    del "%TMPU%" >nul 2>&1
+    echo ОШИБКА: git не смог проверить состояние репозитория.
+    goto :fin_error
+)
+for %%A in ("%TMPU%") do set "UNMERGED_SIZE=%%~zA"
+del "%TMPU%" >nul 2>&1
+if not "%UNMERGED_SIZE%"=="0" (
+    echo ОШИБКА: в GitHub Desktop не завершено слияние веток.
+    echo Открой репозиторий, заверши или отмени merge и обнови main,
+    echo затем снова запусти Publish.bat.
+    goto :fin_error
 )
 if not defined GIT (
     echo ОШИБКА: не найден git.
@@ -133,9 +150,9 @@ echo Отправляю...
 if errorlevel 1 goto :fin_push_error
 
 echo.
-echo ГОТОВО. Streamlit Cloud увидит изменения сам и пересоберёт дашборд --
-echo обычно это занимает 1-3 минуты. Потом открой ссылку в телефоне и
-echo нажми "Обновить данные".
+echo ГОТОВО. Код отправлен в GitHub.
+echo Для Club в Render проверь новую сборку. Если её нет, выбери
+echo Manual Deploy -^> Deploy latest commit в el-molino-club.
 goto :fin_ok
 
 :fin_push_error
