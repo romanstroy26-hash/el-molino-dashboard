@@ -28,7 +28,7 @@
         <form id="registration-form" hidden><label for="registration-name">Tu nombre</label><input id="registration-name" type="text" autocomplete="name" required><label for="registration-phone">Número de teléfono</label><input id="registration-phone" type="tel" inputmode="tel" autocomplete="tel" required><label class="signup-consent"><input id="registration-consent" type="checkbox"><span>Quiero recibir novedades y rewards.</span></label><button class="button-primary">Recibir código <span aria-hidden="true">→</span></button></form>
         <form id="registration-code-form" hidden><label for="registration-code">Código de 6 dígitos</label><input id="registration-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button class="button-primary">Crear mi cuenta <span aria-hidden="true">→</span></button></form>
         <button id="back-to-login" class="link auth-switch" type="button" hidden>Ya tengo cuenta</button>
-        <p id="login-message" class="message" aria-live="polite"></p><div class="panel-footer">Hecho para tus pausas favoritas.</div>
+        <p id="login-message" class="message" aria-live="polite"></p><button id="session-retry" class="button-primary" type="button" hidden>Volver a cargar <span aria-hidden="true">→</span></button><div class="panel-footer">Hecho para tus pausas favoritas.</div>
       </div>
     </section>
 

@@ -1,4 +1,6 @@
-const state = { phone: "", token: localStorage.getItem("el_molino_token"), customer: JSON.parse(localStorage.getItem("el_molino_customer") || "null") };
+let savedCustomer = null;
+try { savedCustomer = JSON.parse(localStorage.getItem("el_molino_customer") || "null"); } catch { localStorage.removeItem("el_molino_customer"); }
+const state = { phone: "", token: localStorage.getItem("el_molino_token"), customer: savedCustomer };
 const openedCampaigns = new Set();
 const loginView = document.querySelector("#login-view"), clubView = document.querySelector("#club-view");
 const message = document.querySelector("#login-message");
@@ -8,7 +10,11 @@ function headers() { return { "Content-Type": "application/json", Authorization:
 async function request(path, options = {}) {
   const response = await fetch(path, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "No fue posible completar la solicitud.");
+  if (!response.ok) {
+    const error = new Error(typeof data.detail === "string" ? data.detail : "No fue posible completar la solicitud.");
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 function setSession(session) {
@@ -16,6 +22,8 @@ function setSession(session) {
   localStorage.setItem("el_molino_token", state.token); localStorage.setItem("el_molino_customer", JSON.stringify(state.customer));
 }
 function clearSession() { localStorage.removeItem("el_molino_token"); localStorage.removeItem("el_molino_customer"); state.token = null; state.customer = null; openedCampaigns.clear(); }
+const sessionRetry = document.querySelector("#session-retry");
+sessionRetry.addEventListener("click", showClub);
 
 document.querySelector("#phone-form").addEventListener("submit", async (event) => {
   event.preventDefault(); state.phone = document.querySelector("#phone").value.trim(); showMessage("Enviando código…");
@@ -83,6 +91,7 @@ document.querySelector("#profile-form").addEventListener("submit", async (event)
 });
 
 async function showClub() {
+  sessionRetry.hidden = true;
   try {
     const customer = await request(`/customers/${state.customer.id}`, { headers: headers() });
     const points = await request(`/customers/${state.customer.id}/points`, { headers: headers() });
@@ -96,9 +105,18 @@ async function showClub() {
     document.querySelector("#points-balance").textContent = points.balance;
     document.querySelector("#profile-name").value = customer.full_name; document.querySelector("#profile-email").value = customer.email || "";
     document.querySelector("#marketing-consent").checked = customer.marketing_consent; document.querySelector("#preferred-channel").value = profile.preferred_channel || "";
-    renderCampaigns(campaigns); renderRewards(rewards, points.balance); renderPurchases(purchases); renderRedemptions(redemptions); loginView.hidden = true; clubView.hidden = false;
+    renderCampaigns(campaigns); renderRewards(rewards, points.balance); renderPurchases(purchases); renderRedemptions(redemptions); loginView.hidden = true; clubView.hidden = false; showMessage("");
     request(`/customers/${customer.id}/events`, { method: "POST", headers: headers(), body: JSON.stringify({ event_type: "app_open" }) }).catch(() => {});
-  } catch (error) { clearSession(); loginView.hidden = false; clubView.hidden = true; showMessage("Tu sesión terminó. Ingresa de nuevo.", true); }
+  } catch (error) {
+    loginView.hidden = false; clubView.hidden = true;
+    if (error.status === 401 || error.status === 403) {
+      clearSession();
+      showMessage("Tu sesión terminó. Ingresa de nuevo.", true);
+    } else {
+      showMessage("No pudimos cargar tu Club. Revisa tu conexión e inténtalo de nuevo.", true);
+      sessionRetry.hidden = false;
+    }
+  }
 }
 function renderCampaigns(campaigns) {
   const section = document.querySelector("#campaign-section"), container = document.querySelector("#campaigns"); container.replaceChildren(); section.hidden = !campaigns.length;
