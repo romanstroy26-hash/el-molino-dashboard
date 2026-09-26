@@ -35,6 +35,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
+from customer_schema import customer_metadata
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = "el_molino.db"
@@ -115,14 +116,15 @@ def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
         url = f"sqlite:///{db_path}"
     # pool_pre_ping -- перед тем как отдать соединение из пула, тихо
     # проверяет его коротким запросом. Без этого долго живущий процесс
-    # (дашборд, который никто не закрывает по многу часов, или
-    # vigilar.py, который вообще не останавливается) рано или поздно
-    # получает соединение, которое незаметно оборвал облачный пулер
-    # (Supabase Session pooler закрывает простаивающие соединения сам) --
-    # и падает с невнятной сетевой ошибкой на ровном месте. На SQLite
-    # это же самое просто ничего не стоит.
+    # (дашборд, который никто не закрывает по многу часов, vigilar.py,
+    # который вообще не останавливается, или api.py у Club) рано или
+    # поздно получает соединение, которое незаметно оборвал облачный
+    # пулер (Supabase Session pooler закрывает простаивающие соединения
+    # сам) -- и падает с невнятной сетевой ошибкой на ровном месте. На
+    # SQLite это же самое просто ничего не стоит.
     engine = create_engine(url, future=True, pool_pre_ping=True)
     metadata.create_all(engine)
+    customer_metadata.create_all(engine)
     _migrate_schema(engine)
     _crear_indices(engine)
     _seed_coffee_keywords(engine)
