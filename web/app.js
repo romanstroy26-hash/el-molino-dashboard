@@ -100,10 +100,18 @@ document.querySelector("#code-form").addEventListener("submit", async (event) =>
   try {
     setSession(await request("/auth/verify-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: state.phone, code: document.querySelector("#code").value }) }));
     await showClub();
-  } catch (error) { showMessage(error.message, true); }
+  } catch (error) {
+    showMessage(error.status === 401
+      ? "Código inválido o vencido. Si es tu primera visita, pulsa «Crea tu cuenta» y solicita un código nuevo."
+      : error.message, true);
+  }
 });
 document.querySelector("#change-phone").addEventListener("click", () => { document.querySelector("#code-form").hidden = true; document.querySelector("#phone-form").hidden = false; showMessage(""); });
 document.querySelector("#show-registration").addEventListener("click", () => {
+  const loginPhone = state.phone || document.querySelector("#phone").value.trim();
+  if (loginPhone && !document.querySelector("#registration-phone").value.trim()) {
+    document.querySelector("#registration-phone").value = loginPhone;
+  }
   document.querySelector("#auth-title").textContent = "Crea tu cuenta";
   document.querySelector("#auth-description").textContent = "Regístrate para acumular puntos y recibir tus recompensas.";
   document.querySelector("#phone-form").hidden = true;
@@ -111,6 +119,7 @@ document.querySelector("#show-registration").addEventListener("click", () => {
   document.querySelector("#show-registration").hidden = true;
   document.querySelector("#registration-form").hidden = false;
   document.querySelector("#back-to-login").hidden = false;
+  document.querySelector("#registration-name").focus();
   showMessage("");
 });
 document.querySelector("#back-to-login").addEventListener("click", () => {
