@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from api import create_app
 from customer_schema import customer_events, customer_metadata, purchase_items, rewards
+from db import metadata as sales_metadata, sales_lines
 from sqlalchemy import func, select
 
 
@@ -472,6 +473,48 @@ def test_cashier_can_register_walk_in_and_credit_first_purchase():
         lines = conn.execute(select(purchase_items.c.product_name).where(purchase_items.c.purchase_id == ticket.json()["id"])).scalars().all()
     assert set(lines) == {"Café", "Pan dulce"}
     assert client.get("/cashier/customers?phone=5551234567", headers=cashier_headers()).json()["points_balance"] == 70
+
+
+def test_cashier_assigns_imported_wansoft_ticket_once():
+    client = make_client()
+    engine = client.app.state.engine
+    sales_metadata.create_all(engine)
+    first = create_customer(client)
+    second = client.post("/customers", json={"full_name": "Bea", "phone": "555-456"}, headers=cashier_headers()).json()
+    with engine.begin() as connection:
+        for line_number, name, quantity, price in [(1, "Café", 2, 75.0), (2, "Pan dulce", 1, 25.0)]:
+            connection.execute(sales_lines.insert().values(
+                sucursal="El Molino Ruso", fecha="2026-09-24", hora_cierre="2026-09-24T14:30:00",
+                movimiento_pdv=123456, anio=2026, accion="Venta", es_modificador="No",
+                platillo=name, cantidad=quantity, precio_unit_con_mod=price,
+                importe=quantity * price, archivo_origen="test.xlsx", fila_origen=line_number,
+                cargado_en="2026-09-24T15:00:00",
+            ))
+
+    preview_url = "/cashier/wansoft-tickets/123456"
+    assign_url = f"/cashier/customers/{first['id']}/wansoft-tickets/123456"
+    assert client.get(preview_url).status_code == 401
+    assert client.post(assign_url).status_code == 401
+    preview = client.get(preview_url, headers=cashier_headers())
+    assert preview.status_code == 200
+    assert preview.json()["total_amount"] == "175.00"
+    assert [item["product_name"] for item in preview.json()["items"]] == ["Café", "Pan dulce"]
+    assert client.get("/cashier/wansoft-tickets/999", headers=cashier_headers()).status_code == 404
+
+    with engine.begin() as connection:
+        connection.execute(sales_lines.update().where(sales_lines.c.fila_origen == 2).values(importe=999))
+    assert client.get(preview_url, headers=cashier_headers()).status_code == 422
+    with engine.begin() as connection:
+        connection.execute(sales_lines.update().where(sales_lines.c.fila_origen == 2).values(importe=25))
+
+    assigned = client.post(assign_url, headers=cashier_headers())
+    assert assigned.status_code == 201
+    assert assigned.json()["points_earned"] == 175
+    repeated = client.post(assign_url, headers=cashier_headers())
+    assert repeated.status_code == 201
+    assert repeated.json()["id"] == assigned.json()["id"]
+    assert client.get("/cashier/customers?phone=555-123", headers=cashier_headers()).json()["points_balance"] == 175
+    assert client.post(f"/cashier/customers/{second['id']}/wansoft-tickets/123456", headers=cashier_headers()).status_code == 400
 
 
 def test_reward_handover_is_visible_to_customer_and_happens_once():
