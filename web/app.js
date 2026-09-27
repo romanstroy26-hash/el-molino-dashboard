@@ -66,7 +66,7 @@ function startResendCooldown(button) {
   update();
   resendTimers.set(button, setInterval(update, 1000));
 }
-function enableCodeResend(button, path, phone) {
+function enableCodeResend(button, path, phone, successText) {
   button.addEventListener("click", async () => {
     if (button.disabled) return;
     button.disabled = true;
@@ -74,15 +74,17 @@ function enableCodeResend(button, path, phone) {
     try {
       await request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: phone() }) });
       startResendCooldown(button);
-      showMessage("Si el número está disponible, recibirás un nuevo código.");
+      showMessage(successText);
     } catch (error) {
       button.disabled = false;
       showMessage(error.message, true);
     }
   });
 }
-enableCodeResend(document.querySelector("#resend-login-code"), "/auth/request-code", () => state.phone);
-enableCodeResend(document.querySelector("#resend-registration-code"), "/auth/register/request-code", () => state.registrationPhone);
+enableCodeResend(document.querySelector("#resend-login-code"), "/auth/request-code", () => state.phone,
+  "Si ya tienes cuenta, recibirás un nuevo código por SMS. Si no, regístrate.");
+enableCodeResend(document.querySelector("#resend-registration-code"), "/auth/register/request-code", () => state.registrationPhone,
+  "Si el número está disponible, recibirás un nuevo código por SMS.");
 
 document.querySelector("#phone-form").addEventListener("submit", async (event) => {
   event.preventDefault(); state.phone = document.querySelector("#phone").value.trim(); showMessage("Enviando código…");
@@ -90,7 +92,7 @@ document.querySelector("#phone-form").addEventListener("submit", async (event) =
     await request("/auth/request-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: state.phone }) });
     document.querySelector("#phone-form").hidden = true; document.querySelector("#code-form").hidden = false; document.querySelector("#code").focus();
     startResendCooldown(document.querySelector("#resend-login-code"));
-    showMessage("Revisa el SMS con tu código de acceso.");
+    showMessage("Si ya tienes cuenta, recibirás un código por SMS. Si no, regístrate.");
   } catch (error) { showMessage(error.message, true); }
 });
 document.querySelector("#code-form").addEventListener("submit", async (event) => {
@@ -102,6 +104,8 @@ document.querySelector("#code-form").addEventListener("submit", async (event) =>
 });
 document.querySelector("#change-phone").addEventListener("click", () => { document.querySelector("#code-form").hidden = true; document.querySelector("#phone-form").hidden = false; showMessage(""); });
 document.querySelector("#show-registration").addEventListener("click", () => {
+  document.querySelector("#auth-title").textContent = "Crea tu cuenta";
+  document.querySelector("#auth-description").textContent = "Regístrate para acumular puntos y recibir tus recompensas.";
   document.querySelector("#phone-form").hidden = true;
   document.querySelector("#code-form").hidden = true;
   document.querySelector("#show-registration").hidden = true;
@@ -110,6 +114,8 @@ document.querySelector("#show-registration").addEventListener("click", () => {
   showMessage("");
 });
 document.querySelector("#back-to-login").addEventListener("click", () => {
+  document.querySelector("#auth-title").textContent = "Entra a tu cuenta";
+  document.querySelector("#auth-description").textContent = "Usa tu número de teléfono para ver tus puntos y recompensas.";
   document.querySelector("#registration-form").hidden = true;
   document.querySelector("#registration-code-form").hidden = true;
   document.querySelector("#back-to-login").hidden = true;
@@ -126,7 +132,7 @@ document.querySelector("#registration-form").addEventListener("submit", async (e
     document.querySelector("#registration-code-form").hidden = false;
     document.querySelector("#registration-code").focus();
     startResendCooldown(document.querySelector("#resend-registration-code"));
-    showMessage("Revisa el SMS con tu código de registro.");
+    showMessage("Si el número está disponible, recibirás un código por SMS para registrarte.");
   } catch (error) { showMessage(error.message, true); }
 });
 document.querySelector("#registration-code-form").addEventListener("submit", async (event) => {

@@ -21,7 +21,7 @@
       </div>
       <div class="login-panel card">
         <div class="panel-topline"><span>01 / 02</span><span>EL MOLINO CLUB</span></div>
-        <h2>Entra a tu cuenta</h2><p class="muted">Usa tu número de teléfono para ver tus puntos y recompensas.</p>
+        <h2 id="auth-title">Entra a tu cuenta</h2><p id="auth-description" class="muted">Usa tu número de teléfono para ver tus puntos y recompensas.</p>
         <form id="phone-form"><label for="phone">Número de teléfono</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="444 123 4567" required><button class="button-primary">Continuar <span aria-hidden="true">→</span></button></form>
         <form id="code-form" hidden><label for="code">Código de 6 dígitos</label><input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button class="button-primary">Entrar al Club <span aria-hidden="true">→</span></button><div class="code-actions"><button class="link" type="button" id="change-phone">Usar otro número</button><button class="link resend-code" type="button" id="resend-login-code" disabled>Reenviar código</button></div></form>
         <button id="show-registration" class="link auth-switch" type="button">¿Nuevo en el Club? Regístrate</button>
