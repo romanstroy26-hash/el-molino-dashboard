@@ -62,7 +62,7 @@ from customer_service import (
 from db import get_engine
 from phone_numbers import mexican_sms_number
 from sms_provider import SmsDeliveryError, sender_from_env
-from wansoft_loyalty import WansoftTicketError, read_wansoft_ticket
+from wansoft_loyalty import WansoftTicketError, list_wansoft_reconciliation, read_wansoft_ticket
 
 
 logger = logging.getLogger(__name__)
@@ -302,6 +302,15 @@ class WansoftTicketOut(APIModel):
     items: list[WansoftTicketItemOut]
 
 
+class WansoftReconciliationOut(APIModel):
+    external_reference: str
+    customer_name: str
+    purchased_at: datetime
+    credited_amount: Decimal
+    wansoft_amount: Decimal | None
+    status: str
+
+
 class PurchaseHistoryItemOut(APIModel):
     product_name: str
     quantity: Decimal
@@ -499,6 +508,10 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
             )
         except CustomerError as error:
             raise _error_to_http(error) from error
+
+    @app.get("/admin/wansoft-reconciliation", response_model=list[WansoftReconciliationOut])
+    def read_wansoft_reconciliation(limit: int = Query(50, ge=1, le=100), _: None = Depends(require_admin)) -> list[dict]:
+        return list_wansoft_reconciliation(app.state.engine, limit)
 
     @app.post("/customers", response_model=CustomerOut, status_code=status.HTTP_201_CREATED)
     def register_customer(payload: CustomerCreate, _: None = Depends(require_cashier)) -> dict:
