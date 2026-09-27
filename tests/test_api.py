@@ -119,6 +119,18 @@ def test_new_customer_registers_only_after_phone_code():
     assert client.post("/auth/register/verify-code", json={"phone": "555-789", "code": code, "full_name": "Ana"}).status_code == 401
 
 
+def test_registration_code_survives_login_form_by_mistake():
+    client = make_client()
+    phone = "555-790"
+    requested = client.post("/auth/register/request-code", json={"phone": phone})
+    assert requested.status_code == 202
+    code = requested.json()["debug_code"]
+    assert client.post("/auth/verify-code", json={"phone": phone, "code": code}).status_code == 401
+    registered = client.post("/auth/register/verify-code", json={"phone": phone, "code": code, "full_name": "Roman"})
+    assert registered.status_code == 201
+    assert registered.json()["customer"]["full_name"] == "Roman"
+
+
 def test_login_code_locks_after_five_wrong_attempts():
     client = make_client()
     create_customer(client)
@@ -515,6 +527,48 @@ def test_cashier_assigns_imported_wansoft_ticket_once():
     assert repeated.json()["id"] == assigned.json()["id"]
     assert client.get("/cashier/customers?phone=555-123", headers=cashier_headers()).json()["points_balance"] == 175
     assert client.post(f"/cashier/customers/{second['id']}/wansoft-tickets/123456", headers=cashier_headers()).status_code == 400
+
+
+def test_manager_can_reconcile_recent_cashier_tickets_without_changing_points():
+    client = make_client()
+    engine = client.app.state.engine
+    sales_metadata.create_all(engine)
+    customer = create_customer(client)
+    url = f"/customers/{customer['id']}/purchases"
+    for reference, amount in [("101", "50.00"), ("102", "70.00"),
+                              ("103", "40.00"), ("manual-foo", "15.00")]:
+        response = client.post(url, json={"external_reference": reference,
+                                          "total_amount": amount,
+                                          "items": [{"product_name": "Pan", "quantity": 1,
+                                                     "unit_price": amount}]}, headers=cashier_headers())
+        assert response.status_code == 201
+    with engine.begin() as connection:
+        for ticket, amount in [(101, 50.0), (102, 65.0)]:
+            connection.execute(sales_lines.insert().values(
+                sucursal="El Molino", fecha="2026-09-24", hora_cierre="2026-09-24T14:30:00",
+                movimiento_pdv=ticket, anio=2026, accion="Venta", es_modificador="No",
+                platillo="Pan", cantidad=1, precio_unit_con_mod=amount,
+                importe=amount, archivo_origen="reconciliation.xlsx", fila_origen=ticket,
+                cargado_en="2026-09-25T08:00:00",
+            ))
+    headers = {"X-Admin-Key": "admin-test-key"}
+    assert client.get("/admin/wansoft-reconciliation").status_code == 401
+    assert client.get("/admin/wansoft-reconciliation", headers=cashier_headers()).status_code == 401
+    assert client.get("/admin/wansoft-reconciliation?limit=0", headers=headers).status_code == 422
+    before = client.get("/cashier/customers?phone=555-123", headers=cashier_headers()).json()["points_balance"]
+    result = client.get("/admin/wansoft-reconciliation", headers=headers)
+    assert result.status_code == 200
+    rows = {row["external_reference"]: row for row in result.json()}
+    assert {reference: row["status"] for reference, row in rows.items()} == {
+        "101": "matched", "102": "amount_mismatch",
+        "103": "pending_import", "manual-foo": "unverifiable",
+    }
+    assert rows["102"]["credited_amount"] == "70.00"
+    assert rows["102"]["wansoft_amount"] == "65.00"
+    assert rows["103"]["wansoft_amount"] is None
+    assert all(row["customer_name"] == "Ana" for row in rows.values())
+    after = client.get("/cashier/customers?phone=555-123", headers=cashier_headers()).json()["points_balance"]
+    assert before == after == 175
 
 
 def test_reward_handover_is_visible_to_customer_and_happens_once():

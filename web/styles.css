@@ -51,12 +51,16 @@ button{border:0;border-radius:10px;background:#1b4d3b;color:#fff;padding:13px 18
 button:hover:not(:disabled){transform:translateY(-1px);background:#296149}
 button:disabled{background:#c8d0c7;color:#617367;cursor:not-allowed}
 .button-primary{width:100%;display:flex;align-items:center;justify-content:space-between;margin-top:22px}
+.online-club-link{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:17px;padding:14px 17px;border-radius:10px;background:#1b4d3b;color:#fff;font-size:14px;font-weight:800;text-decoration:none}.online-club-link:hover{background:#296149}.online-club-link[hidden]{display:none}
 .link{background:transparent;color:#35654c;padding:7px 0;text-decoration:underline;min-height:auto}
 .link:hover:not(:disabled){background:transparent;color:#143e2d;transform:none}
+.code-actions{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:4px 14px;margin-top:8px}
+.resend-code{display:block;margin-top:8px;font-size:12px;text-align:left}
+.resend-code:disabled{background:transparent;color:#89958c;text-decoration:none}
 .message{min-height:20px;margin:14px 0 0;font-size:13px;line-height:1.5;color:#2f7653}
 .error{color:#a94132!important}
 .panel-footer{border-top:1px solid #e9e9de;padding-top:18px;margin-top:25px;color:#9e8975;font-size:11px;text-align:center}
-.auth-switch{display:block;margin:8px auto 0;font-size:12px}.signup-consent{display:flex;align-items:start;gap:10px;font-size:12px;font-weight:normal;line-height:1.5}.signup-consent input{width:17px;height:17px;min-height:0;flex:none;margin:0;accent-color:#1b4d3b}
+.auth-switch{display:block;margin:8px auto 0;font-size:12px}#show-registration{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:18px;padding:12px 15px;background:#eef3e9;border:1px solid #cbd9cd;color:#1b4d3b;text-align:left;font-size:13px}#show-registration:hover:not(:disabled){background:#e1ecde}.form-hint{margin:16px 0 4px;font-size:13px;line-height:1.5;color:#587063}.signup-consent{display:flex;align-items:start;gap:10px;font-size:12px;font-weight:normal;line-height:1.5}.signup-consent input{width:17px;height:17px;min-height:0;flex:none;margin:0;accent-color:#1b4d3b}
 .site-footer{display:flex;justify-content:space-between;gap:12px;border-top:1px solid #ced9cc;padding:25px 0;color:#897c6c;font-size:9px}
 .welcome{display:flex;justify-content:space-between;align-items:start;gap:20px;padding-top:56px}
 .welcome h1{font-size:clamp(38px,4vw,58px);margin:0 0 8px}.welcome .muted{margin:0}.welcome-dot{color:#c0774b}

@@ -91,6 +91,13 @@
             <p id="manager-message" class="message" role="status"></p>
             <div id="manager-results" class="staff-results"></div>
           </section>
+          <section id="reconciliation-section" class="card">
+            <p class="eyebrow">CONTROL DE PUNTOS</p><h2>Revisión de tickets</h2>
+            <p class="muted">Compara los últimos 50 tickets acreditados con las ventas cargadas desde Wansoft. Solo muestra diferencias; no modifica puntos.</p>
+            <button id="load-reconciliation" type="button">Revisar tickets</button>
+            <p id="reconciliation-message" class="message" role="status"></p>
+            <div id="reconciliation-results" class="staff-results"></div>
+          </section>
           <section class="card">
             <p class="eyebrow">RECOMPENSAS</p><h2>Nuevo reward</h2>
             <form id="reward-form"><label for="reward-name">Nombre</label><input id="reward-name" required><label for="reward-cost">Costo en puntos</label><input id="reward-cost" type="number" min="1" step="1" required><button>Crear reward</button></form>

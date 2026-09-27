@@ -8,10 +8,33 @@ const message = document.querySelector("#login-message");
 function showMessage(text, error = false) { message.textContent = text; message.classList.toggle("error", error); }
 function headers() { return { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` }; }
 async function request(path, options = {}) {
-  const response = await fetch(path, options);
+  if (location.protocol === "file:") {
+    throw new Error("Esta copia local no puede enviar códigos. Abre el Club en línea con el enlace de abajo.");
+  }
+  const retryCodeRequest = path === "/auth/request-code" || path === "/auth/register/request-code";
+  let response;
+  for (let attempt = 0; attempt < (retryCodeRequest ? 2 : 1); attempt++) {
+    try {
+      response = await fetch(path, options);
+    } catch {
+      if (retryCodeRequest && attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      throw new Error("No pudimos conectar con El Molino. Revisa tu conexión y vuelve a intentarlo.");
+    }
+    if (retryCodeRequest && attempt === 0 && [502, 504].includes(response.status)) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
+    }
+    break;
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(typeof data.detail === "string" ? data.detail : "No fue posible completar la solicitud.");
+    const detail = typeof data.detail === "string" ? data.detail :
+      [502, 504].includes(response.status) ? "El servidor está iniciando. Espera un momento y vuelve a intentarlo." :
+        "No fue posible completar la solicitud.";
+    const error = new Error(detail);
     error.status = response.status;
     throw error;
   }
@@ -24,13 +47,52 @@ function setSession(session) {
 function clearSession() { localStorage.removeItem("el_molino_token"); localStorage.removeItem("el_molino_customer"); state.token = null; state.customer = null; openedCampaigns.clear(); }
 const sessionRetry = document.querySelector("#session-retry");
 sessionRetry.addEventListener("click", showClub);
+const resendTimers = new WeakMap();
+function startResendCooldown(button) {
+  clearInterval(resendTimers.get(button));
+  const availableAt = Date.now() + 65000;
+  const update = () => {
+    const seconds = Math.ceil((availableAt - Date.now()) / 1000);
+    if (seconds <= 0) {
+      clearInterval(resendTimers.get(button));
+      resendTimers.delete(button);
+      button.disabled = false;
+      button.textContent = "Reenviar código";
+      return;
+    }
+    button.disabled = true;
+    button.textContent = `Reenviar en ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  update();
+  resendTimers.set(button, setInterval(update, 1000));
+}
+function enableCodeResend(button, path, phone, successText) {
+  button.addEventListener("click", async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    showMessage("Enviando nuevo código…");
+    try {
+      await request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: phone() }) });
+      startResendCooldown(button);
+      showMessage(successText);
+    } catch (error) {
+      button.disabled = false;
+      showMessage(error.message, true);
+    }
+  });
+}
+enableCodeResend(document.querySelector("#resend-login-code"), "/auth/request-code", () => state.phone,
+  "Si ya tienes cuenta, recibirás un nuevo código por SMS. Si no, regístrate.");
+enableCodeResend(document.querySelector("#resend-registration-code"), "/auth/register/request-code", () => state.registrationPhone,
+  "Si el número está disponible, recibirás un nuevo código por SMS.");
 
 document.querySelector("#phone-form").addEventListener("submit", async (event) => {
   event.preventDefault(); state.phone = document.querySelector("#phone").value.trim(); showMessage("Enviando código…");
   try {
     await request("/auth/request-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: state.phone }) });
     document.querySelector("#phone-form").hidden = true; document.querySelector("#code-form").hidden = false; document.querySelector("#code").focus();
-    showMessage("Revisa el SMS con tu código de acceso.");
+    startResendCooldown(document.querySelector("#resend-login-code"));
+    showMessage("Si ya tienes cuenta, recibirás un código por SMS. Si no, regístrate.");
   } catch (error) { showMessage(error.message, true); }
 });
 document.querySelector("#code-form").addEventListener("submit", async (event) => {
@@ -38,18 +100,31 @@ document.querySelector("#code-form").addEventListener("submit", async (event) =>
   try {
     setSession(await request("/auth/verify-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: state.phone, code: document.querySelector("#code").value }) }));
     await showClub();
-  } catch (error) { showMessage(error.message, true); }
+  } catch (error) {
+    showMessage(error.status === 401
+      ? "Código inválido o vencido. Si es tu primera visita, pulsa «Crea tu cuenta» y solicita un código nuevo."
+      : error.message, true);
+  }
 });
 document.querySelector("#change-phone").addEventListener("click", () => { document.querySelector("#code-form").hidden = true; document.querySelector("#phone-form").hidden = false; showMessage(""); });
 document.querySelector("#show-registration").addEventListener("click", () => {
+  const loginPhone = state.phone || document.querySelector("#phone").value.trim();
+  if (loginPhone && !document.querySelector("#registration-phone").value.trim()) {
+    document.querySelector("#registration-phone").value = loginPhone;
+  }
+  document.querySelector("#auth-title").textContent = "Crea tu cuenta";
+  document.querySelector("#auth-description").textContent = "Regístrate para acumular puntos y recibir tus recompensas.";
   document.querySelector("#phone-form").hidden = true;
   document.querySelector("#code-form").hidden = true;
   document.querySelector("#show-registration").hidden = true;
   document.querySelector("#registration-form").hidden = false;
   document.querySelector("#back-to-login").hidden = false;
+  document.querySelector("#registration-name").focus();
   showMessage("");
 });
 document.querySelector("#back-to-login").addEventListener("click", () => {
+  document.querySelector("#auth-title").textContent = "Entra a tu cuenta";
+  document.querySelector("#auth-description").textContent = "Usa tu número de teléfono para ver tus puntos y recompensas.";
   document.querySelector("#registration-form").hidden = true;
   document.querySelector("#registration-code-form").hidden = true;
   document.querySelector("#back-to-login").hidden = true;
@@ -65,7 +140,8 @@ document.querySelector("#registration-form").addEventListener("submit", async (e
     document.querySelector("#registration-form").hidden = true;
     document.querySelector("#registration-code-form").hidden = false;
     document.querySelector("#registration-code").focus();
-    showMessage("Revisa el SMS con tu código de registro.");
+    startResendCooldown(document.querySelector("#resend-registration-code"));
+    showMessage("Si el número está disponible, recibirás un código por SMS para registrarte.");
   } catch (error) { showMessage(error.message, true); }
 });
 document.querySelector("#registration-code-form").addEventListener("submit", async (event) => {
@@ -187,6 +263,12 @@ function renderRedemptions(redemptions) {
     details.append(title, status, code); item.append(details); container.append(item);
   });
 }
-if (location.protocol === "file:") showMessage("Vista previa. Para iniciar sesión, abre Club.bat y visita http://127.0.0.1:8000/.");
+if (location.protocol === "file:") {
+  showMessage("Esta copia local es solo una vista previa. Abre el Club en línea para entrar o registrarte.", true);
+  ["#phone-form", "#code-form", "#registration-form", "#registration-code-form", "#show-registration", "#back-to-login"].forEach((selector) => {
+    document.querySelector(selector).hidden = true;
+  });
+  document.querySelector("#online-club-link").hidden = false;
+}
 else if (state.token && state.customer) showClub();
 if (location.protocol !== "file:" && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");

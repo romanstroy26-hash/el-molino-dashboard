@@ -311,6 +311,38 @@ byId("load-actions").addEventListener("click", async () => {
   } catch (error) { setMessage("manager-message", error.message, true); }
 });
 
+byId("load-reconciliation").addEventListener("click", async () => {
+  setMessage("reconciliation-message", "Comparando tickets…");
+  const container = byId("reconciliation-results"); container.replaceChildren();
+  try {
+    const rows = await managerRequest("/admin/wansoft-reconciliation");
+    const verified = rows.filter((row) => row.status === "matched").length;
+    const review = rows.filter((row) => row.status !== "matched");
+    if (!rows.length) {
+      setMessage("reconciliation-message", "Todavía no hay tickets acreditados.");
+      return;
+    }
+    setMessage("reconciliation-message", `${verified} de ${rows.length} tickets coinciden. ${review.length} requieren revisión.`);
+    const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+    const labels = {
+      pending_import: "Pendiente de importar",
+      amount_mismatch: "Importe diferente",
+      unverifiable: "Número no verificable",
+    };
+    review.forEach((row) => {
+      const card = document.createElement("article");
+      card.className = `staff-result reconciliation-result ${row.status}`;
+      const badge = document.createElement("span"); badge.className = "reconciliation-badge";
+      badge.textContent = labels[row.status] || "Revisar";
+      const title = document.createElement("strong"); title.textContent = `Ticket ${row.external_reference}`;
+      const detail = document.createElement("p");
+      const actual = row.wansoft_amount === null ? "sin venta Wansoft cargada" : `Wansoft ${money.format(Number(row.wansoft_amount))}`;
+      detail.textContent = `${row.customer_name} · acreditado ${money.format(Number(row.credited_amount))} · ${actual}`;
+      card.append(badge, title, detail); container.append(card);
+    });
+  } catch (error) { setMessage("reconciliation-message", error.message, true); }
+});
+
 byId("reward-form").addEventListener("submit", async (event) => {
   event.preventDefault(); setMessage("reward-message", "Guardando…");
   try {
