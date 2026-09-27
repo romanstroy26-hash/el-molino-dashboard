@@ -1,5 +1,6 @@
 let selectedCustomer = null;
 let inspectedRedemption = null;
+let loadedWansoftTicketId = null;
 const byId = (id) => document.getElementById(id);
 if (location.protocol === "file:") byId("staff-file-notice").hidden = false;
 
@@ -30,6 +31,7 @@ function managerRequest(path, options) { return apiRequest(path, "admin-key", "X
 function cashierRequest(path, options) { return apiRequest(path, "cashier-key", "X-Cashier-Key", options); }
 function setSelectedCustomer(customer) {
   selectedCustomer = customer;
+  resetWansoftPreview();
   byId("new-customer-section").hidden = true;
   byId("cashier-customer").hidden = false;
   byId("purchase-section").hidden = false;
@@ -107,6 +109,57 @@ byId("new-customer-form").addEventListener("submit", async (event) => {
 });
 
 const purchaseItems = byId("purchase-items");
+
+function resetWansoftPreview() {
+  loadedWansoftTicketId = null;
+  byId("wansoft-preview").hidden = true;
+  byId("wansoft-items").replaceChildren();
+}
+
+byId("ticket").addEventListener("input", () => { resetWansoftPreview(); setMessage("wansoft-message", ""); });
+byId("load-wansoft-ticket").addEventListener("click", async () => {
+  resetWansoftPreview();
+  const ticketId = byId("ticket").value.trim();
+  const customerId = selectedCustomer?.id;
+  if (!/^\d+$/.test(ticketId) || Number(ticketId) < 1) {
+    setMessage("wansoft-message", "Introduce el número de ticket Wansoft.", true);
+    return;
+  }
+  setMessage("wansoft-message", "Buscando ticket…");
+  try {
+    const ticket = await cashierRequest(`/cashier/wansoft-tickets/${encodeURIComponent(ticketId)}`);
+    if (byId("ticket").value.trim() !== ticketId || selectedCustomer?.id !== customerId) return;
+    loadedWansoftTicketId = ticketId;
+    const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+    const day = ticket.purchased_at.slice(0, 10).split("-").reverse().join("/");
+    byId("wansoft-summary").textContent = `${ticket.sucursal} · ${day} · ${money.format(Number(ticket.total_amount))} · ${ticket.items.length} productos`;
+    const list = byId("wansoft-items");
+    ticket.items.forEach((item) => {
+      const row = document.createElement("li");
+      row.textContent = `${Number(item.quantity)} × ${item.product_name} · ${money.format(Number(item.line_total))}`;
+      list.append(row);
+    });
+    byId("wansoft-preview").hidden = false;
+    setMessage("wansoft-message", "Revisa el ticket y asígnalo al cliente.");
+  } catch (error) { setMessage("wansoft-message", error.message, true); }
+});
+
+byId("assign-wansoft-ticket").addEventListener("click", async () => {
+  const ticketId = loadedWansoftTicketId;
+  const customerId = selectedCustomer?.id;
+  if (!ticketId || !customerId || byId("ticket").value.trim() !== ticketId) return;
+  byId("assign-wansoft-ticket").disabled = true;
+  setMessage("wansoft-message", "Asignando puntos…");
+  try {
+    const purchase = await cashierRequest(`/cashier/customers/${customerId}/wansoft-tickets/${encodeURIComponent(ticketId)}`, { method: "POST" });
+    setMessage("purchase-message", `Ticket Wansoft ${ticketId}: ${purchase.points_earned} puntos asociados.`);
+    byId("purchase-form").reset();
+    purchaseItems.replaceChildren(); addPurchaseItem();
+    setSelectedCustomer(await cashierRequest(`/cashier/customers?phone=${encodeURIComponent(byId("lookup-phone").value.trim())}`));
+    setMessage("wansoft-message", "");
+  } catch (error) { setMessage("wansoft-message", error.message, true); }
+  finally { byId("assign-wansoft-ticket").disabled = false; }
+});
 
 function purchaseLineCents(quantity, price) {
   const unitsThousandths = Math.round(Number(quantity) * 1000);
@@ -187,6 +240,7 @@ byId("purchase-form").addEventListener("submit", async (event) => {
     byId("purchase-form").reset();
     purchaseItems.replaceChildren();
     addPurchaseItem();
+    resetWansoftPreview();
   } catch (error) { setMessage("purchase-message", error.message, true); }
   finally { byId("purchase-submit").disabled = false; }
 });

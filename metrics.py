@@ -223,6 +223,71 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
     return salida
 
 
+def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
+                            desde: str | None = None, hasta: str | None = None) -> list[dict]:
+    """La MISMA partición de cuatro categorías que serie_por_periodo, pero
+    sumada por HORA DEL DÍA (0-23) sobre TODO el rango de una vez -- no
+    "cuánto se vende", sino "A QUÉ HORA se vende cada categoría". Sirve
+    para ver si el café se concentra en la mañana y el frappé en la
+    tarde (calor) -- la misma pregunta que el archivo de referencia
+    intentaba responder con la temperatura, pero con datos que ya
+    tenemos (hora_cierre), sin depender de un dato externo manual.
+
+    Requiere hora_cierre -- filas sin hora (exportaciones viejas antes de
+    que Wansoft empezara a guardar el número de chequeo) quedan fuera."""
+    keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
+
+    sql = ("SELECT hora_cierre, tipo_grupo, platillo, importe, cantidad "
+           "FROM sales_lines WHERE hora_cierre IS NOT NULL AND hora_cierre != ''")
+    params: dict = {}
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    if desde:
+        sql += " AND fecha >= :desde"
+        params["desde"] = desde
+    if hasta:
+        sql += " AND fecha <= :hasta"
+        params["hasta"] = hasta
+
+    cafe = defaultdict(float)
+    frappe = defaultdict(float)
+    otras = defaultdict(float)
+    u_cafe = defaultdict(float)
+    u_frappe = defaultdict(float)
+    u_otras = defaultdict(float)
+
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            try:
+                hora = dt.datetime.fromisoformat(row["hora_cierre"]).hour
+            except (ValueError, TypeError):
+                continue
+            es_cafe = is_coffee(row["platillo"], row["tipo_grupo"], keywords)
+            if es_cafe:
+                cafe[hora] += row["importe"]
+                u_cafe[hora] += row["cantidad"]
+            elif row["tipo_grupo"] == "FRAPPES":
+                frappe[hora] += row["importe"]
+                u_frappe[hora] += row["cantidad"]
+            elif row["tipo_grupo"] == "CAFETERIA":
+                otras[hora] += row["importe"]
+                u_otras[hora] += row["cantidad"]
+
+    return [
+        {
+            "hora": h,
+            "cafe_total": round(cafe.get(h, 0.0), 2),
+            "frappe_total": round(frappe.get(h, 0.0), 2),
+            "otras_bebidas_total": round(otras.get(h, 0.0), 2),
+            "unidades_cafe": round(u_cafe.get(h, 0.0), 2),
+            "unidades_frappe": round(u_frappe.get(h, 0.0), 2),
+            "unidades_otras_bebidas": round(u_otras.get(h, 0.0), 2),
+        }
+        for h in range(24)
+    ]
+
+
 def _filtro_rango_sql(sucursal, desde, hasta):
     """Construye el fragmento WHERE + parámetros compartido por varias
     consultas de abajo (mismo patrón que serie_por_periodo)."""

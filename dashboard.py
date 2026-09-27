@@ -19,8 +19,8 @@ dashboard.py -- Блок 5: интерфейс. ОДИН файл, весь ко
     Pastelería/Café) и график "прогноз и факт по часам". По умолчанию --
     последний загруженный день и все точки
     вместе, но точку и день можно поменять в фильтрах слева.
-  - "Доля кофе"      -- фильтры (точка, период, диапазон дат) -> графики
-    доли кофе в продажах.
+  - "Доля напитков"  -- фильтры (точка, измерение, период, диапазон дат)
+    -> полная аналитика напитков: кофе, фраппе, остальные напитки.
   - "Продажи по часам" -- то же самое, что на главной, но с выбором любого
     дня и точки (детальный разбор конкретного дня).
   - "Топ товаров"    -- какие позиции меню и категории приносят больше
@@ -55,7 +55,7 @@ import tiempo
 COLOR_PRIMARIO = "#B07E22"
 COLOR_SECUNDARIO = "#199E70"
 
-# Третий цвет -- для страницы "Доля кофе", где кофе, фраппе и остальные
+# Третий цвет -- для страницы "Доля напитков", где кофе, фраппе и остальные
 # напитки показаны одновременно (структура выручки напитков, три
 # категории рядом). Фиолетовый выбран специально не из тёплой gold-семьи
 # (чтобы не путаться с золотом = "кофе"/деньги) и не из зелёно-бирюзовой
@@ -190,6 +190,11 @@ def _cache_serie_por_periodo(_engine, granularidad, sucursal, desde, hasta):
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_ventas_por_hora(_engine, fecha, sucursal):
     return metrics.ventas_por_hora(_engine, fecha, sucursal=sucursal)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
+    return metrics.patron_horario_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -845,18 +850,57 @@ def page_dashboard():
     shtuki = {c: df[col].sum() for c, col in _MEDIDAS["Штуки, шт"]["columnas"].items()}
     pct_de_ventas = {c: (100 * v / ventas_total if ventas_total else 0.0) for c, v in dinero.items()}
 
-    # ---- KPI: 4 категории рядом, в измерении из фильтра ----------------------
+    # ---- То же самое за ПРЕДЫДУЩИЙ период такой же длины -- чтобы у карточек
+    # ниже была стрелка "выросло/упало", а не голая цифра без контекста.
+    # Гранулярность здесь всегда "день" -- только чтобы точно просуммировать
+    # произвольный диапазон; на график ниже это не влияет.
+    dney_diapazon = (hasta - desde).days + 1
+    prev_hasta = desde - dt.timedelta(days=1)
+    prev_desde = prev_hasta - dt.timedelta(days=dney_diapazon - 1)
+    filas_prev = _cache_serie_por_periodo(
+        engine, "dia", sucursal_filtro, prev_desde.isoformat(), prev_hasta.isoformat(),
+    )
+    if filas_prev:
+        df_prev = pd.DataFrame(filas_prev)
+        ventas_prev = df_prev["ventas_totales"].sum()
+        dinero_prev = {c: df_prev[col].sum() for c, col in _MEDIDAS["Выручка, $"]["columnas"].items()}
+        shtuki_prev = {c: df_prev[col].sum() for c, col in _MEDIDAS["Штуки, шт"]["columnas"].items()}
+        pct_prev = {c: (100 * v / ventas_prev if ventas_prev else 0.0) for c, v in dinero_prev.items()}
+    else:
+        dinero_prev = shtuki_prev = pct_prev = None
+
+    # ---- KPI: 4 категории рядом, в измерении из фильтра, со стрелкой ---------
     st.subheader("Напитки в общих продажах")
     tarjetas = st.columns(4)
     for col, cat in zip(tarjetas, _KATEGORII_NAPITKOV):
+        delta_txt = None
         if medida_label == "Доля, % от продаж":
             valor_txt = f"{pct_de_ventas[cat]:.1f}%"
+            if pct_prev is not None:
+                delta_txt = f"{pct_de_ventas[cat] - pct_prev[cat]:+.1f} пт"
         elif medida_label == "Выручка, $":
             valor_txt = f"{dinero[cat]:,.0f} $"
+            if dinero_prev is not None and dinero_prev[cat]:
+                delta_txt = f"{100 * (dinero[cat] - dinero_prev[cat]) / dinero_prev[cat]:+.1f}%"
         else:
             valor_txt = f"{shtuki[cat]:,.0f} шт"
-        col.metric(cat, valor_txt)
-    st.caption(f"Продажи всего (все категории меню, не только напитки): {ventas_total:,.0f} $")
+            if shtuki_prev is not None and shtuki_prev[cat]:
+                delta_txt = f"{100 * (shtuki[cat] - shtuki_prev[cat]) / shtuki_prev[cat]:+.1f}%"
+        col.metric(cat, valor_txt, delta=delta_txt)
+
+    if filas_prev:
+        st.caption(
+            f"Продажи всего (все категории меню, не только напитки): "
+            f"{ventas_total:,.0f} $. Стрелка -- сравнение с таким же по длине "
+            f"периодом непосредственно перед выбранным "
+            f"({prev_desde} -- {prev_hasta}, {dney_diapazon} дн.)."
+        )
+    else:
+        st.caption(
+            f"Продажи всего (все категории меню, не только напитки): "
+            f"{ventas_total:,.0f} $. Для стрелки-сравнения нет данных за "
+            f"предыдущий период такой же длины."
+        )
 
     if dinero["Фраппе"]:
         st.caption(
@@ -900,6 +944,86 @@ def page_dashboard():
         "«Напитки» (пунктирная линия) -- это ровно сумма трёх остальных: "
         "кофе + фраппе + остальные напитки, в любом измерении слева."
     )
+
+    # ---- Когда именно продаются напитки: по часам дня -----------------------
+    # Отвечает не на "сколько", а на "в какое время" -- та же идея, что
+    # температура в присланном примере (жара -> тянет на холодное), только
+    # без внешних данных: час чека уже есть в базе. Три категории, не
+    # четыре -- "Напитки" здесь не нужна отдельной линией, это и так вся
+    # высота столбика (кофе+фраппе+остальные).
+    patron_horas = _cache_patron_horario_bebidas(
+        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+    )
+    if any(h["cafe_total"] or h["frappe_total"] or h["otras_bebidas_total"] for h in patron_horas):
+        st.subheader("Когда продаются напитки, по часам дня")
+        df_horas = pd.DataFrame(patron_horas)
+
+        _KAT_HORAS = ["Кофе", "Фраппе", "Остальные напитки"]
+        _COL_HORAS_PCT = {"Кофе": "cafe_total", "Фраппе": "frappe_total",
+                           "Остальные напитки": "otras_bebidas_total"}
+        if medida_label == "Штуки, шт":
+            columnas_h = {"Кофе": "unidades_cafe", "Фраппе": "unidades_frappe",
+                          "Остальные напитки": "unidades_otras_bebidas"}
+            apilado, titulo_h, formato_h = "zero", "шт", ",.0f"
+        elif medida_label == "Выручка, $":
+            columnas_h = _COL_HORAS_PCT
+            apilado, titulo_h, formato_h = "zero", "$", ",.0f"
+        else:
+            # "Доля, % от продаж" здесь считается иначе, чем на карточках
+            # выше (там -- % от ВСЕХ продаж точки): по часам честнее
+            # показать % от напитков ИМЕННО ЭТОГО часа -- так видно, как
+            # МЕНЯЕТСЯ состав в течение дня, а не только когда людно.
+            # stack="normalize" в Altair сам считает эту долю из сырых $.
+            columnas_h = _COL_HORAS_PCT
+            apilado, titulo_h, formato_h = "normalize", "% от напитков этого часа", ".1f"
+
+        largo_horas = df_horas.melt(
+            id_vars=["hora"], value_vars=list(columnas_h.values()),
+            var_name="_col", value_name="valor",
+        )
+        col_a_cat_h = {v: k for k, v in columnas_h.items()}
+        largo_horas["categoria"] = largo_horas["_col"].map(col_a_cat_h)
+        orden_h = {"Кофе": 0, "Фраппе": 1, "Остальные напитки": 2}
+        largo_horas["orden"] = largo_horas["categoria"].map(orden_h)
+
+        grafico_horas = alt.Chart(largo_horas).mark_bar().encode(
+            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("valor:Q", stack=apilado, title=titulo_h),
+            color=alt.Color(
+                "categoria:N",
+                scale=alt.Scale(domain=_KAT_HORAS,
+                                 range=[_COLOR_KATEGORII[c] for c in _KAT_HORAS]),
+                legend=alt.Legend(title=None, orient="bottom"),
+            ),
+            order=alt.Order("orden:Q"),
+            tooltip=[
+                alt.Tooltip("hora:O", title="Час"),
+                alt.Tooltip("categoria:N", title="Категория"),
+                alt.Tooltip("valor:Q", title=titulo_h, format=formato_h),
+            ],
+        ).properties(height=280)
+        st.altair_chart(grafico_horas, width="stretch")
+
+        if medida_label == "Доля, % от продаж":
+            st.caption(
+                "Здесь -- доля от выручки напитков В ЭТОТ КОНКРЕТНЫЙ час (не "
+                "от общих продаж, как на карточках выше). Так видно, что "
+                "состав меняется в течение дня -- например, если доля "
+                "фраппе днём заметно выше, чем в вечерний час пик, значит "
+                "фраппе берут не только потому, что людно, а именно в жару."
+            )
+        else:
+            st.caption(
+                "Столбики показывают, когда за день набегает выручка/штуки "
+                "каждой категории -- не только сколько всего, но и в какие "
+                "часы. Диапазон дат и точка -- из фильтров слева."
+            )
+    else:
+        st.info(
+            "Для этого диапазона нет строк с временем чека (hora_cierre) -- "
+            "почасовой разбор недоступен. Перезагрузи те же файлы Wansoft "
+            "через Start.bat -> пункт 1, это дозаполнит время без дублей."
+        )
 
     # ---- Таблица ---------------------------------------------------------------
     with st.expander("Таблица (данные графика выше, все измерения сразу)"):
@@ -1098,7 +1222,7 @@ def page_top_productos():
 # =============================================================================
 page = st.sidebar.radio(
     "Раздел",
-    ["Главная", "Доля кофе", "Продажи по часам", "Топ товаров", "Настройки"],
+    ["Главная", "Доля напитков", "Продажи по часам", "Топ товаров", "Настройки"],
     index=0,
 )
 st.sidebar.divider()
@@ -1131,7 +1255,7 @@ st.sidebar.caption(f"🕐 Сан-Луис-Потоси: {tiempo.etiqueta()}")
 
 if page == "Главная":
     page_home()
-elif page == "Доля кофе":
+elif page == "Доля напитков":
     page_dashboard()
 elif page == "Продажи по часам":
     page_por_hora()

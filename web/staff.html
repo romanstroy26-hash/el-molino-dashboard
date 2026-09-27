@@ -57,7 +57,9 @@
           <section id="purchase-section" class="card" hidden>
             <p class="eyebrow">REGISTRO DE VENTA</p><h2>Registrar compra</h2>
             <form id="purchase-form">
-              <label for="ticket">Número de ticket</label><input id="ticket" required maxlength="120">
+              <label for="ticket">Número de ticket</label><div class="ticket-lookup-row"><input id="ticket" required maxlength="120"><button id="load-wansoft-ticket" type="button" class="secondary">Buscar en Wansoft</button></div>
+              <div id="wansoft-preview" class="wansoft-preview" hidden><strong>Ticket encontrado</strong><p id="wansoft-summary"></p><ul id="wansoft-items"></ul><button id="assign-wansoft-ticket" type="button">Asignar puntos de este ticket</button></div>
+              <p id="wansoft-message" class="message" role="status"></p>
               <div id="purchase-items" class="purchase-items"></div>
               <button id="add-purchase-item" type="button" class="secondary">+ Añadir producto</button>
               <p class="purchase-total">Total del ticket <output id="purchase-total">0.00 MXN</output></p>
