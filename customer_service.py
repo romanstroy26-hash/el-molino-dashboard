@@ -249,13 +249,13 @@ def verify_login_code(engine: Engine, phone: str, code: str) -> dict:
     now = _now()
     if not phone or len(code) != 6 or not code.isdigit():
         raise InvalidLoginCode("Código inválido")
+    customer = find_customer_by_phone(engine, phone)
+    if not customer:
+        raise CustomerNotFound(phone)
     with engine.begin() as conn:
         valid = _consume_phone_code(conn, phone, code, now)
     if not valid:
         raise InvalidLoginCode("Código inválido o vencido")
-    customer = find_customer_by_phone(engine, phone)
-    if not customer:
-        raise CustomerNotFound(phone)
     return customer
 
 
