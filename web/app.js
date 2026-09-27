@@ -8,10 +8,33 @@ const message = document.querySelector("#login-message");
 function showMessage(text, error = false) { message.textContent = text; message.classList.toggle("error", error); }
 function headers() { return { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` }; }
 async function request(path, options = {}) {
-  const response = await fetch(path, options);
+  if (location.protocol === "file:") {
+    throw new Error("Esta copia local no puede enviar códigos. Abre el Club en línea con el enlace de abajo.");
+  }
+  const retryCodeRequest = path === "/auth/request-code" || path === "/auth/register/request-code";
+  let response;
+  for (let attempt = 0; attempt < (retryCodeRequest ? 2 : 1); attempt++) {
+    try {
+      response = await fetch(path, options);
+    } catch {
+      if (retryCodeRequest && attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      throw new Error("No pudimos conectar con El Molino. Revisa tu conexión y vuelve a intentarlo.");
+    }
+    if (retryCodeRequest && attempt === 0 && [502, 504].includes(response.status)) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
+    }
+    break;
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(typeof data.detail === "string" ? data.detail : "No fue posible completar la solicitud.");
+    const detail = typeof data.detail === "string" ? data.detail :
+      [502, 504].includes(response.status) ? "El servidor está iniciando. Espera un momento y vuelve a intentarlo." :
+        "No fue posible completar la solicitud.";
+    const error = new Error(detail);
     error.status = response.status;
     throw error;
   }
@@ -187,6 +210,12 @@ function renderRedemptions(redemptions) {
     details.append(title, status, code); item.append(details); container.append(item);
   });
 }
-if (location.protocol === "file:") showMessage("Vista previa. Para iniciar sesión, abre Club.bat y visita http://127.0.0.1:8000/.");
+if (location.protocol === "file:") {
+  showMessage("Esta copia local es solo una vista previa. Abre el Club en línea para entrar o registrarte.", true);
+  ["#phone-form", "#code-form", "#registration-form", "#registration-code-form", "#show-registration", "#back-to-login"].forEach((selector) => {
+    document.querySelector(selector).hidden = true;
+  });
+  document.querySelector("#online-club-link").hidden = false;
+}
 else if (state.token && state.customer) showClub();
 if (location.protocol !== "file:" && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");

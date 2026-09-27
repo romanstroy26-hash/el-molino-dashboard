@@ -51,6 +51,7 @@ button{border:0;border-radius:10px;background:#1b4d3b;color:#fff;padding:13px 18
 button:hover:not(:disabled){transform:translateY(-1px);background:#296149}
 button:disabled{background:#c8d0c7;color:#617367;cursor:not-allowed}
 .button-primary{width:100%;display:flex;align-items:center;justify-content:space-between;margin-top:22px}
+.online-club-link{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:17px;padding:14px 17px;border-radius:10px;background:#1b4d3b;color:#fff;font-size:14px;font-weight:800;text-decoration:none}.online-club-link:hover{background:#296149}.online-club-link[hidden]{display:none}
 .link{background:transparent;color:#35654c;padding:7px 0;text-decoration:underline;min-height:auto}
 .link:hover:not(:disabled){background:transparent;color:#143e2d;transform:none}
 .message{min-height:20px;margin:14px 0 0;font-size:13px;line-height:1.5;color:#2f7653}
