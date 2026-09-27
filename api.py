@@ -1,8 +1,4 @@
-"""FastAPI application for the El Molino customer app.
-
-The API delegates all loyalty and customer mutations to ``customer_service``;
-it does not connect to Wansoft or implement a second data-access layer.
-"""
+"""FastAPI application for the El Molino customer app."""
 
 from __future__ import annotations
 
@@ -66,6 +62,7 @@ from customer_service import (
 from db import get_engine
 from phone_numbers import mexican_sms_number
 from sms_provider import SmsDeliveryError, sender_from_env
+from wansoft_loyalty import WansoftTicketError, read_wansoft_ticket
 
 
 logger = logging.getLogger(__name__)
@@ -290,6 +287,21 @@ class PurchaseOut(APIModel):
     points_earned: int
 
 
+class WansoftTicketItemOut(APIModel):
+    product_name: str
+    quantity: Decimal
+    unit_price: Decimal
+    line_total: Decimal
+
+
+class WansoftTicketOut(APIModel):
+    external_reference: str
+    sucursal: str
+    purchased_at: datetime
+    total_amount: Decimal
+    items: list[WansoftTicketItemOut]
+
+
 class PurchaseHistoryItemOut(APIModel):
     product_name: str
     quantity: Decimal
@@ -458,6 +470,33 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
     def read_cashier_purchases(customer_id: str, limit: int = Query(5, ge=1, le=20), _: None = Depends(require_cashier)) -> list[dict]:
         try:
             return list_customer_purchases(app.state.engine, customer_id, limit)
+        except CustomerError as error:
+            raise _error_to_http(error) from error
+
+    def load_wansoft_ticket(ticket_id: int) -> dict:
+        if ticket_id <= 0:
+            raise HTTPException(status_code=422, detail="Número de ticket inválido")
+        try:
+            ticket = read_wansoft_ticket(app.state.engine, ticket_id)
+        except WansoftTicketError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="Ticket no encontrado en los reportes Wansoft")
+        return ticket
+
+    @app.get("/cashier/wansoft-tickets/{ticket_id}", response_model=WansoftTicketOut)
+    def preview_wansoft_ticket(ticket_id: int, _: None = Depends(require_cashier)) -> dict:
+        return load_wansoft_ticket(ticket_id)
+
+    @app.post("/cashier/customers/{customer_id}/wansoft-tickets/{ticket_id}", response_model=PurchaseOut, status_code=status.HTTP_201_CREATED)
+    def assign_wansoft_ticket(customer_id: str, ticket_id: int, _: None = Depends(require_cashier)) -> dict:
+        ticket = load_wansoft_ticket(ticket_id)
+        try:
+            return record_purchase(
+                app.state.engine, customer_id, ticket["total_amount"], ticket["items"],
+                purchased_at=ticket["purchased_at"], source="cashier",
+                external_reference=ticket["external_reference"], points_per_mxn=1,
+            )
         except CustomerError as error:
             raise _error_to_http(error) from error
 
