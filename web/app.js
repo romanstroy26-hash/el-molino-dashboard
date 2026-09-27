@@ -47,12 +47,49 @@ function setSession(session) {
 function clearSession() { localStorage.removeItem("el_molino_token"); localStorage.removeItem("el_molino_customer"); state.token = null; state.customer = null; openedCampaigns.clear(); }
 const sessionRetry = document.querySelector("#session-retry");
 sessionRetry.addEventListener("click", showClub);
+const resendTimers = new WeakMap();
+function startResendCooldown(button) {
+  clearInterval(resendTimers.get(button));
+  const availableAt = Date.now() + 65000;
+  const update = () => {
+    const seconds = Math.ceil((availableAt - Date.now()) / 1000);
+    if (seconds <= 0) {
+      clearInterval(resendTimers.get(button));
+      resendTimers.delete(button);
+      button.disabled = false;
+      button.textContent = "Reenviar código";
+      return;
+    }
+    button.disabled = true;
+    button.textContent = `Reenviar en ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  update();
+  resendTimers.set(button, setInterval(update, 1000));
+}
+function enableCodeResend(button, path, phone) {
+  button.addEventListener("click", async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    showMessage("Enviando nuevo código…");
+    try {
+      await request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: phone() }) });
+      startResendCooldown(button);
+      showMessage("Si el número está disponible, recibirás un nuevo código.");
+    } catch (error) {
+      button.disabled = false;
+      showMessage(error.message, true);
+    }
+  });
+}
+enableCodeResend(document.querySelector("#resend-login-code"), "/auth/request-code", () => state.phone);
+enableCodeResend(document.querySelector("#resend-registration-code"), "/auth/register/request-code", () => state.registrationPhone);
 
 document.querySelector("#phone-form").addEventListener("submit", async (event) => {
   event.preventDefault(); state.phone = document.querySelector("#phone").value.trim(); showMessage("Enviando código…");
   try {
     await request("/auth/request-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: state.phone }) });
     document.querySelector("#phone-form").hidden = true; document.querySelector("#code-form").hidden = false; document.querySelector("#code").focus();
+    startResendCooldown(document.querySelector("#resend-login-code"));
     showMessage("Revisa el SMS con tu código de acceso.");
   } catch (error) { showMessage(error.message, true); }
 });
@@ -88,6 +125,7 @@ document.querySelector("#registration-form").addEventListener("submit", async (e
     document.querySelector("#registration-form").hidden = true;
     document.querySelector("#registration-code-form").hidden = false;
     document.querySelector("#registration-code").focus();
+    startResendCooldown(document.querySelector("#resend-registration-code"));
     showMessage("Revisa el SMS con tu código de registro.");
   } catch (error) { showMessage(error.message, true); }
 });
