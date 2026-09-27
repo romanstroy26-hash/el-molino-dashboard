@@ -119,6 +119,18 @@ def test_new_customer_registers_only_after_phone_code():
     assert client.post("/auth/register/verify-code", json={"phone": "555-789", "code": code, "full_name": "Ana"}).status_code == 401
 
 
+def test_registration_code_survives_login_form_by_mistake():
+    client = make_client()
+    phone = "555-790"
+    requested = client.post("/auth/register/request-code", json={"phone": phone})
+    assert requested.status_code == 202
+    code = requested.json()["debug_code"]
+    assert client.post("/auth/verify-code", json={"phone": phone, "code": code}).status_code == 401
+    registered = client.post("/auth/register/verify-code", json={"phone": phone, "code": code, "full_name": "Roman"})
+    assert registered.status_code == 201
+    assert registered.json()["customer"]["full_name"] == "Roman"
+
+
 def test_login_code_locks_after_five_wrong_attempts():
     client = make_client()
     create_customer(client)
