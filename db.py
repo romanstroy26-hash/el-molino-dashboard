@@ -24,6 +24,7 @@ Postgres 16 -- одни и те же функции, один и тот же р�
 """
 
 import datetime
+import math
 import os
 from pathlib import Path
 from typing import Iterable
@@ -105,6 +106,18 @@ DEFAULT_COFFEE_KEYWORDS = [
     "AMERICANO", "ESPRESSO", "CAPUCCINO", "CAPUCHINO", "LATTE",
     "FLAT WHITE", "MOCHA", "RAF", "MOKA", "MACCHIATO", "CORTADO",
 ]
+
+# План производства (Panadería, в штуках) -- вводится вручную на странице
+# "Планирование" дашборда, по одной цифре на день (без разбивки по точкам:
+# производство пока не привязано к конкретной точке, см. обсуждение
+# страницы). Один день -- одна строка, поэтому fecha сама и есть первичный
+# ключ: сохранение -- это "удалить эти даты, вставить заново" (см.
+# set_plan_produccion), а не отдельный update/insert.
+plan_produccion = Table(
+    "plan_produccion", metadata,
+    Column("fecha", String, primary_key=True),  # ISO 'YYYY-MM-DD'
+    Column("unidades_plan", Float, nullable=False),
+)
 
 
 def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
@@ -282,3 +295,45 @@ def replace_coffee_keywords(engine: Engine, palabras_activas: list[str]) -> None
             conn.execute(coffee_keywords.insert(), [
                 {"palabra": p, "activo": 1} for p in palabras_activas
             ])
+
+
+def get_plan_produccion(engine: Engine, desde: str | None = None,
+                         hasta: str | None = None) -> list[dict]:
+    sql = select(plan_produccion).order_by(plan_produccion.c.fecha)
+    if desde:
+        sql = sql.where(plan_produccion.c.fecha >= desde)
+    if hasta:
+        sql = sql.where(plan_produccion.c.fecha <= hasta)
+    with engine.connect() as conn:
+        return [dict(r) for r in conn.execute(sql).mappings()]
+
+
+def set_plan_produccion(engine: Engine, filas: list[dict]) -> None:
+    """Guarda el plan editado en la página 'Планирование'. Reemplaza SOLO
+    las fechas que vienen en `filas` (borra esas fechas, inserta de nuevo)
+    -- así guardar el rango que se está viendo en pantalla no toca el plan
+    de fechas fuera de ese rango. Una fila con unidades_plan vacío/None
+    borra el plan de ese día (el usuario limpió la celda -- significa "sin
+    plan todavía", no "plan de cero unidades")."""
+    fechas = [f["fecha"] for f in filas]
+    con_valor = []
+    for f in filas:
+        v = f.get("unidades_plan")
+        if v is None or v == "":
+            continue
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        # math.isnan, no solo "not in (None, '')": el editor de Streamlit
+        # entrega celdas vacías como NaN de pandas (float), no como None --
+        # sin este chequeo NaN pasaba el filtro y se guardaba tal cual en
+        # la base (ya pasó una vez, ver limpieza en la conversación).
+        if math.isnan(v):
+            continue
+        con_valor.append({"fecha": f["fecha"], "unidades_plan": v})
+    with engine.begin() as conn:
+        if fechas:
+            conn.execute(delete(plan_produccion).where(plan_produccion.c.fecha.in_(fechas)))
+        if con_valor:
+            conn.execute(plan_produccion.insert(), con_valor)

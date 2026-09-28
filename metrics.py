@@ -595,6 +595,65 @@ def _recortar_atipicos(valores: list[float]) -> list[float]:
     return [min(max(v, piso), techo) for v in valores]
 
 
+def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
+                                 sucursal: str | None = None) -> list[dict]:
+    """Producción de Panadería (unidades) DÍA por día, para la página
+    "Планирование" -- compara "cuánto se vendió" contra "cuánto se
+    esperaba vender" y (aparte, en la tabla de plan_produccion) contra
+    "cuánto se planeó producir". Mismo método que el pronóstico por hora de
+    ventas_por_hora (promedio del mismo día de semana, ponderado por
+    recencia -- ver _peso_recencia --, con outliers suavizados -- ver
+    _recortar_atipicos), pero agregando POR DÍA COMPLETO en vez de por
+    hora, y solo tipo_grupo='PANADERIA' en vez de todo el menú.
+
+    desde/hasta puede incluir fechas FUTURAS (para planear producción de
+    días que todavía no pasaron) -- ahí "real_unidades" sale None (no hay
+    venta todavía), pero "pronostico_unidades" sí se calcula igual, a
+    partir de todo el historial disponible del mismo día de semana."""
+    # Agregado en el SQL (GROUP BY fecha), no fila por fila en Python -- esta
+    # tabla tiene cientos de miles de líneas de Panadería; traerlas todas
+    # para sumar en Python tardaba ~30s por el tráfico de red hacia la base
+    # en la nube, contra <1s agregando del lado del servidor.
+    sql = ("SELECT fecha, SUM(cantidad) AS total FROM sales_lines "
+           "WHERE tipo_grupo = 'PANADERIA'")
+    params: dict = {}
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    sql += " GROUP BY fecha"
+
+    por_dia: dict[dt.date, float] = {}
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            por_dia[dt.date.fromisoformat(row["fecha"])] = row["total"]
+
+    por_dia_semana: dict[int, list[tuple[dt.date, float]]] = defaultdict(list)
+    for d, cantidad in por_dia.items():
+        por_dia_semana[d.weekday()].append((d, cantidad))
+
+    fecha_ini = dt.date.fromisoformat(desde)
+    fecha_fin = dt.date.fromisoformat(hasta)
+
+    salida = []
+    d = fecha_ini
+    while d <= fecha_fin:
+        historicos = [(fd, val) for fd, val in por_dia_semana.get(d.weekday(), []) if fd != d]
+        pronostico = None
+        if historicos:
+            valores = _recortar_atipicos([v for _, v in historicos])
+            pesos = [_peso_recencia(fd, d) for fd, _ in historicos]
+            peso_total = sum(pesos)
+            if peso_total:
+                pronostico = sum(v * p for v, p in zip(valores, pesos)) / peso_total
+        salida.append({
+            "fecha": d.isoformat(),
+            "real_unidades": round(por_dia[d], 2) if d in por_dia else None,
+            "pronostico_unidades": round(pronostico, 2) if pronostico is not None else None,
+        })
+        d += dt.timedelta(days=1)
+    return salida
+
+
 def ventas_por_hora(engine: Engine, fecha: str, sucursal: str | None = None) -> dict:
     """Продажи по часам одного конкретного дня (в деньгах И в штуках) против
     ПРОГНОЗА для того же дня недели -- построен из ВСЕЙ доступной истории

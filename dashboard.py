@@ -25,6 +25,9 @@ dashboard.py -- Блок 5: интерфейс. ОДИН файл, весь ко
     дня и точки (детальный разбор конкретного дня).
   - "Топ товаров"    -- какие позиции меню и категории приносят больше
     всего выручки за период (полная картина продаж, не только кофе).
+  - "Планирование"   -- только категория Panadería, в штуках: реальные
+    продажи, прогноз (по истории того же дня недели) и план производства
+    (вводится вручную -- отдельного источника плана пока нет).
   - "Настройки"      -- форма: список слов для распознавания кофе. Изменения
     сохраняются в базу и сразу видны на дашборде (никакого "запусти
     скрипт заново").
@@ -40,7 +43,10 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from db import DEFAULT_DB_PATH, get_coffee_keywords, get_engine, replace_coffee_keywords
+from db import (
+    DEFAULT_DB_PATH, get_coffee_keywords, get_engine, get_plan_produccion,
+    replace_coffee_keywords, set_plan_produccion,
+)
 import metrics
 import tiempo
 
@@ -195,6 +201,11 @@ def _cache_ventas_por_hora(_engine, fecha, sucursal):
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
     return metrics.patron_horario_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_panaderia_real_y_pronostico(_engine, desde, hasta, sucursal):
+    return metrics.panaderia_real_y_pronostico(_engine, desde=desde, hasta=hasta, sucursal=sucursal)
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -1346,9 +1357,140 @@ def page_top_productos():
 
 
 # =============================================================================
+# Страница "Планирование" -- Panadería: реальные продажи, прогноз и план
+# производства (штуки). План пока не приходит ниоткуда автоматически --
+# вводится вручную ниже и хранится в таблице plan_produccion (db.py).
+# =============================================================================
+def page_planificacion():
+    st.title("📋 Планирование")
+    st.caption(f"База данных: {_db_label()}")
+    st.caption(
+        "Только категория «Panadería» (выпечка), в штуках. Три ряда: "
+        "реальные продажи (закрытые дни), прогноз (по истории того же дня "
+        "недели -- тот же метод, что и на «Продажи по часам») и план "
+        "производства (вводится вручную в таблице ниже -- отдельного "
+        "источника плана пока нет)."
+    )
+
+    sucursales = _cache_sucursales(engine)
+    if not sucursales:
+        st.info(
+            "Данных ещё нет -- сначала загрузи файлы Wansoft, потом обнови "
+            "эту страницу."
+        )
+        st.stop()
+
+    st.sidebar.header("Фильтры")
+    opcion_sucursal = st.sidebar.selectbox(
+        "Точка", ["Все точки"] + sucursales, index=0, key="plan_sucursal"
+    )
+    sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
+
+    hoy = tiempo.hoy()
+    desde, hasta = st.sidebar.date_input(
+        "Диапазон дат",
+        value=(hoy - dt.timedelta(days=13), hoy + dt.timedelta(days=13)),
+        key="plan_rango",
+    )
+
+    datos = _cache_panaderia_real_y_pronostico(
+        engine, desde.isoformat(), hasta.isoformat(), sucursal_filtro,
+    )
+    df = pd.DataFrame(datos)
+    for col in ("real_unidades", "pronostico_unidades"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    plan_filas = get_plan_produccion(engine, desde.isoformat(), hasta.isoformat())
+    plan_por_fecha = {f["fecha"]: f["unidades_plan"] for f in plan_filas}
+    # to_numeric, no solo .map(): con el dict de plan vacío (nada guardado
+    # todavía), .map() a secas deja la columna en dtype "object" con NaN
+    # sueltos -- y el editor de Streamlit los pinta como el texto "None"
+    # en vez de una celda vacía. Forzar float64 corrige eso.
+    df["unidades_plan"] = pd.to_numeric(df["fecha"].map(plan_por_fecha), errors="coerce")
+
+    # ---- График: три ряда -----------------------------------------------
+    st.subheader("Реальные продажи, прогноз и план")
+    _NOMBRES_SERIE = {
+        "real_unidades": "Факт",
+        "pronostico_unidades": "Прогноз",
+        "unidades_plan": "План",
+    }
+    largo = df.melt(
+        id_vars=["fecha"], value_vars=list(_NOMBRES_SERIE),
+        var_name="_col", value_name="valor",
+    ).dropna(subset=["valor"])
+    largo["serie"] = largo["_col"].map(_NOMBRES_SERIE)
+
+    grafico = alt.Chart(largo).mark_line(
+        interpolate="linear", point=alt.OverlayMarkDef(opacity=0.6, size=50),
+    ).encode(
+        x=alt.X("fecha:T", title="Дата"),
+        y=alt.Y("valor:Q", title="Штук"),
+        color=alt.Color(
+            "serie:N",
+            scale=alt.Scale(domain=["Факт", "Прогноз", "План"],
+                             range=[COLOR_PRIMARIO, COLOR_TIPICO, COLOR_SECUNDARIO]),
+            legend=alt.Legend(title=None, orient="bottom"),
+        ),
+        strokeDash=alt.StrokeDash(
+            "serie:N",
+            scale=alt.Scale(domain=["Факт", "Прогноз", "План"],
+                             range=[[1, 0], [5, 4], [2, 2]]),
+            legend=None,
+        ),
+        strokeWidth=alt.condition(alt.datum.serie == "Факт", alt.value(3), alt.value(2)),
+        tooltip=[
+            alt.Tooltip("fecha:T", title="Дата"),
+            alt.Tooltip("serie:N", title="Ряд"),
+            alt.Tooltip("valor:Q", title="Штук", format=",.0f"),
+        ],
+    ).properties(height=340)
+    st.altair_chart(grafico, width="stretch")
+
+    st.caption(
+        "Прогноз -- взвешенное среднее по тем же дням недели за всю "
+        "историю (недавние недели весят больше, резкие всплески/провалы "
+        "сглажены -- тот же метод, что на «Продажи по часам»). Для будущих "
+        "дней реальных продаж ещё нет -- видны только прогноз и план."
+    )
+
+    # ---- Таблица с вводом плана -------------------------------------------
+    st.subheader("План производства -- ввод вручную")
+    st.caption(
+        "Впиши штуки на нужный день в столбец «План, шт» и нажми «Сохранить "
+        "план». Пустая ячейка значит «плана ещё нет», а не «план -- ноль»."
+    )
+    df_editor = df[["fecha", "real_unidades", "pronostico_unidades", "unidades_plan"]].rename(
+        columns={
+            "fecha": "Дата", "real_unidades": "Факт, шт",
+            "pronostico_unidades": "Прогноз, шт", "unidades_plan": "План, шт",
+        }
+    )
+    edited = st.data_editor(
+        df_editor,
+        width="stretch", hide_index=True, key="plan_editor",
+        disabled=["Дата", "Факт, шт", "Прогноз, шт"],
+        column_config={
+            "План, шт": st.column_config.NumberColumn(min_value=0, step=1),
+        },
+    )
+
+    if st.button("💾 Сохранить план", type="primary"):
+        filas = [
+            {"fecha": row["Дата"], "unidades_plan": row["План, шт"]}
+            for _, row in edited.iterrows()
+        ]
+        set_plan_produccion(engine, filas)
+        st.cache_data.clear()
+        st.success("План сохранён.")
+        st.rerun()
+
+
+# =============================================================================
 page = st.sidebar.radio(
     "Раздел",
-    ["Главная", "Доля напитков", "Продажи по часам", "Топ товаров", "Настройки"],
+    ["Главная", "Доля напитков", "Продажи по часам", "Топ товаров",
+     "Планирование", "Настройки"],
     index=0,
 )
 st.sidebar.divider()
@@ -1387,5 +1529,7 @@ elif page == "Продажи по часам":
     page_por_hora()
 elif page == "Топ товаров":
     page_top_productos()
+elif page == "Планирование":
+    page_planificacion()
 else:
     page_settings()
