@@ -81,7 +81,7 @@ function showStaffWorkspace(user) {
   const managerAllowed = managerButtons.some((button) => !button.hidden);
   document.querySelector('[data-staff-view="manager-view"]').hidden = !managerAllowed;
   if (managerAllowed) switchView("[data-manager-view]", "managerView", managerButtons.find((button) => !button.hidden).dataset.managerView);
-  switchView("[data-staff-view]", "staffView", cashierAllowed ? "cashier-view" : "manager-view");
+  switchView("[data-staff-view]", "staffView", managerAllowed ? "manager-view" : "cashier-view");
   if (user.is_owner) loadTeam();
   if (user.is_owner || user.permissions.includes("rewards")) loadRewards();
 }
