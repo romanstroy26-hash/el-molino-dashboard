@@ -433,15 +433,34 @@ async function loadCampaigns() {
       });
       card.append(name, detail, statsButton, stats);
       if (campaign.status !== "active") {
-        const activate = document.createElement("button"); activate.type = "button"; activate.className = "secondary"; activate.textContent = "Activar";
+        const previewButton = document.createElement("button"); previewButton.type = "button"; previewButton.className = "secondary"; previewButton.textContent = "Revisar y activar";
+        const previewBox = document.createElement("div"); previewBox.className = "campaign-preview"; previewBox.hidden = true;
+        const previewCount = document.createElement("strong");
+        const previewText = document.createElement("p");
+        const previewNote = document.createElement("p"); previewNote.textContent = "Se verá en el Club. No se envía ningún SMS ni email.";
+        const activate = document.createElement("button"); activate.type = "button"; activate.textContent = "Activar en el Club";
+        previewBox.append(previewCount, previewText, previewNote, activate);
+        const showPreview = async () => {
+          const preview = await managerRequest(`/admin/campaigns/${campaign.id}/preview`);
+          previewCount.textContent = `${preview.eligible_count} destinatarios con consentimiento · ${preview.excluded_count} excluidos`;
+          previewText.textContent = preview.message || "Sin mensaje";
+          activate.disabled = preview.eligible_count === 0;
+          previewBox.hidden = false;
+          return preview;
+        };
+        previewButton.addEventListener("click", async () => {
+          try { await showPreview(); }
+          catch (error) { setMessage("campaign-list-message", error.message, true); }
+        });
         activate.addEventListener("click", async () => {
-          if (!confirm(`¿Activar la campaña ${campaign.name}?`)) return;
           try {
+            const preview = await showPreview();
+            if (!preview.eligible_count || !confirm(`¿Mostrar ${campaign.name} a ${preview.eligible_count} clientes en el Club?`)) return;
             await managerRequest(`/admin/campaigns/${campaign.id}/activate`, { method: "POST" });
             await loadCampaigns();
           } catch (error) { setMessage("campaign-list-message", error.message, true); }
         });
-        card.append(activate);
+        card.append(previewButton, previewBox);
       }
       container.append(card);
     });

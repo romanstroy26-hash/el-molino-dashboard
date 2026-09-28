@@ -31,6 +31,7 @@ from customer_service import (
     create_campaign,
     create_campaign_for_segment,
     list_campaigns,
+    preview_campaign,
     activate_campaign,
     create_reward,
     create_login_challenge,
@@ -221,6 +222,18 @@ class CampaignSummaryOut(APIModel):
     status: str
     recipient_count: int
     created_at: datetime
+
+
+class CampaignPreviewOut(APIModel):
+    id: str
+    name: str
+    channel: str
+    message: str | None = None
+    status: str
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    eligible_count: int
+    excluded_count: int
 
 
 class CampaignInteraction(RequestModel):
@@ -683,6 +696,13 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
     @app.get("/admin/campaigns", response_model=list[CampaignSummaryOut])
     def read_admin_campaigns(_: None = Depends(require_admin)) -> list[dict]:
         return list_campaigns(app.state.engine)
+
+    @app.get("/admin/campaigns/{campaign_id}/preview", response_model=CampaignPreviewOut)
+    def read_campaign_preview(campaign_id: str, _: None = Depends(require_admin)) -> dict:
+        try:
+            return preview_campaign(app.state.engine, campaign_id)
+        except CustomerError as error:
+            raise _error_to_http(error) from error
 
     @app.get("/admin/customers/{customer_id}/insights", response_model=CustomerInsightsOut)
     def read_customer_insights(customer_id: str, _: None = Depends(require_admin)) -> dict:
