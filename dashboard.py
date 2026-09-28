@@ -1410,14 +1410,43 @@ def page_planificacion():
     rango = _cache_rango_fechas(engine, sucursal_filtro)
     fecha_min = dt.date.fromisoformat(rango[0])
     fecha_max = dt.date.fromisoformat(rango[1])
+    # 20 дней факта + 7 дней прогноза -- по просьбе Романа: этого хватает
+    # увидеть недавний тренд и спланировать ближайшую неделю, не перегружая
+    # график лишней историей.
     hoy = tiempo.hoy()
     desde, hasta = st.sidebar.date_input(
         "Диапазон дат",
-        value=(max(fecha_min, hoy - dt.timedelta(days=13)), hoy + dt.timedelta(days=13)),
+        value=(max(fecha_min, hoy - dt.timedelta(days=20)), hoy + dt.timedelta(days=7)),
         min_value=fecha_min,
         key="plan_rango",
     )
     st.sidebar.caption(f"Данные для этой точки есть с {fecha_min} по {fecha_max}")
+
+    # ---- Загрузка производства -- плитка наверху, как в Dodo IS ------------
+    # Додо IS выносит именно такую метрику (штук/чел-час) наверх экрана
+    # плиткой с иконкой, а не прячет её в график ниже -- здесь так же:
+    # одно число, которое сразу видно, не листая страницу. Пиковый час --
+    # не среднее: для решения "хватает ли текущих 5/6 человек" важнее
+    # самый нагруженный момент периода, а не размытое по всему дню
+    # среднее.
+    carga_horas_top = _cache_carga_por_hora_panaderia(
+        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+    )
+    df_carga_top = pd.DataFrame(carga_horas_top)
+    df_carga_top = df_carga_top[df_carga_top["unidades"] > 0]
+    if not df_carga_top.empty:
+        fila_pico = df_carga_top.loc[df_carga_top["unidades_por_persona"].idxmax()]
+        st.metric(
+            "🏭 Пиковая загрузка производства, шт/чел-час",
+            f"{fila_pico['unidades_por_persona']:.1f}",
+            help=(
+                f"Самый нагруженный час за выбранный период -- "
+                f"{int(fila_pico['hora']):02d}:00 ({fila_pico['unidades']:,.0f} шт "
+                f"Panadería, поделено на персонал этого дня недели). "
+                f"Подробный разбор по всем часам -- ниже, в разделе "
+                f"«Штук на человека в час»."
+            ),
+        )
 
     datos = _cache_panaderia_real_y_pronostico(
         engine, desde.isoformat(), hasta.isoformat(), sucursal_filtro,
@@ -1574,12 +1603,10 @@ def page_planificacion():
         )
 
     # ---- Штук на человека в час (загрузка производства) --------------------
+    # Те же данные, что и в плитке "Пиковая загрузка" наверху страницы --
+    # здесь подробный разбор по всем часам, там -- одно самое важное число.
     st.subheader("Штук на человека в час")
-    carga_horas = _cache_carga_por_hora_panaderia(
-        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
-    )
-    df_carga = pd.DataFrame(carga_horas)
-    df_carga = df_carga[df_carga["unidades"] > 0]
+    df_carga = df_carga_top
     if df_carga.empty:
         st.info("Для этого диапазона нет данных, чтобы посчитать нагрузку на человека.")
     else:
