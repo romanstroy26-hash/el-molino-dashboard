@@ -463,6 +463,36 @@ async function loadCampaigns() {
         card.append(previewButton, previewBox);
       } else if (campaign.channel === "sms") {
         const previewButton = document.createElement("button"); previewButton.type = "button"; previewButton.className = "secondary"; previewButton.textContent = "Revisar envío SMS";
+        const auditButton = document.createElement("button"); auditButton.type = "button"; auditButton.className = "secondary"; auditButton.textContent = "Ver estado de SMS";
+        const auditBox = document.createElement("div"); auditBox.className = "campaign-audit"; auditBox.hidden = true;
+        const auditSummary = document.createElement("p");
+        const auditList = document.createElement("div"); auditList.className = "staff-results";
+        const auditMore = document.createElement("button"); auditMore.type = "button"; auditMore.className = "secondary"; auditMore.textContent = "Mostrar más";
+        auditBox.append(auditSummary, auditList, auditMore);
+        let auditOffset = 0;
+        const deliveryLabels = { accepted: "Aceptado por LabsMobile", uncertain: "Sin confirmación", invalid_phone: "Teléfono inválido", excluded: "Sin consentimiento vigente", seen_in_club: "Visto en el Club", pending: "Pendiente" };
+        const loadAudit = async (reset = false) => {
+          if (reset) { auditOffset = 0; auditList.replaceChildren(); }
+          const report = await managerRequest(`/admin/campaigns/${campaign.id}/deliveries?offset=${auditOffset}`);
+          report.rows.forEach((delivery) => {
+            const row = document.createElement("div"); row.className = "campaign-audit-row";
+            const customer = document.createElement("strong"); customer.textContent = `${delivery.customer_name} · ${delivery.phone_masked}`;
+            const outcome = document.createElement("span"); outcome.textContent = deliveryLabels[delivery.status] || delivery.status;
+            row.append(customer, outcome); auditList.append(row);
+          });
+          auditOffset += report.rows.length;
+          auditSummary.textContent = `Mostrando ${auditOffset} de ${report.total_count} destinatarios.`;
+          auditMore.hidden = auditOffset >= report.total_count;
+          auditBox.hidden = false;
+        };
+        auditButton.addEventListener("click", async () => {
+          try { await loadAudit(true); }
+          catch (error) { setMessage("campaign-list-message", error.message, true); }
+        });
+        auditMore.addEventListener("click", async () => {
+          try { await loadAudit(); }
+          catch (error) { setMessage("campaign-list-message", error.message, true); }
+        });
         const previewBox = document.createElement("div"); previewBox.className = "campaign-preview"; previewBox.hidden = true;
         const previewCount = document.createElement("strong");
         const previewText = document.createElement("p");
@@ -493,9 +523,10 @@ async function loadCampaigns() {
             const result = await managerRequest(`/admin/campaigns/${campaign.id}/send-sms`, { method: "POST" });
             sendResult.textContent = `${result.sent} aceptados · ${result.uncertain} sin confirmación · ${result.invalid_phone} teléfonos inválidos · ${result.remaining} pendientes.`;
             await showPreview();
+            if (!auditBox.hidden) await loadAudit(true);
           } catch (error) { setMessage("campaign-list-message", error.message, true); }
         });
-        card.append(previewButton, previewBox);
+        card.append(previewButton, auditButton, previewBox, auditBox);
       }
       container.append(card);
     });
