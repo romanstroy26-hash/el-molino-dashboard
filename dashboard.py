@@ -37,9 +37,12 @@ dashboard.py -- Блок 5: интерфейс. ОДИН файл, весь ко
 """
 
 import datetime as dt
+import io
 from pathlib import Path
 
 import altair as alt
+import openpyxl
+from openpyxl.styles import Font
 import pandas as pd
 import streamlit as st
 
@@ -222,6 +225,55 @@ def _cache_patron_horario_panaderia(_engine, sucursal, desde, hasta):
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_carga_por_hora_panaderia(_engine, sucursal, desde, hasta):
     return metrics.carga_por_hora_panaderia(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_plan_tarea_dia(_engine, fecha, sucursal, n_productos, multiplo):
+    return metrics.plan_tarea_dia(
+        _engine, fecha, sucursal=sucursal, n_productos=n_productos, multiplo=multiplo,
+    )
+
+
+def _excel_plan_tarea(tarea: dict, sucursal_label: str) -> bytes:
+    """Arma el .xlsx del plan-tarea (tarea = metrics.plan_tarea_dia) --
+    tres bloques en una sola hoja: cabecera (fecha/точка/итого/источник),
+    reparto por hora, reparto por producto."""
+    negrita = Font(bold=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "План-задание"
+
+    ws.append(["План-задание на день", tarea["fecha"]])
+    ws["A1"].font = negrita
+    ws.append(["Точка", sucursal_label])
+    ws.append(["Итого, шт (кратно {})".format(tarea["multiplo"]), tarea["total_dia_redondeado"]])
+    ws.append(["Источник итога", tarea["fuente_total"]])
+    ws.append(["До округления, шт", tarea["total_dia"]])
+    ws.append([])
+
+    ws.append(["По часам"])
+    ws[f"A{ws.max_row}"].font = negrita
+    ws.append(["Час", "Доля по истории, %", "План, шт"])
+    for celda in ws[ws.max_row]:
+        celda.font = negrita
+    for fila in tarea["por_hora"]:
+        ws.append([f"{fila['hora']:02d}:00", fila["pct_historico"], fila["unidades_plan"]])
+    ws.append([])
+
+    ws.append(["По позициям меню (топ-{})".format(len(tarea["por_producto"]))])
+    ws[f"A{ws.max_row}"].font = negrita
+    ws.append(["Позиция", "Доля по истории, %", "План, шт"])
+    for celda in ws[ws.max_row]:
+        celda.font = negrita
+    for fila in tarea["por_producto"]:
+        ws.append([fila["platillo"], fila["pct_historico"], fila["unidades_plan"]])
+
+    for col, ancho in zip("ABC", (30, 20, 12)):
+        ws.column_dimensions[col].width = ancho
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -1539,6 +1591,38 @@ def page_planificacion():
         st.cache_data.clear()
         st.success("План сохранён.")
         st.rerun()
+
+    # ---- План-задание на день -- скачать -----------------------------------
+    st.subheader("План-задание на день -- скачать")
+    st.caption(
+        "Готовое задание на смену: сколько штук печь всего, по часам и по "
+        "позициям меню -- каждое число округлено ВВЕРХ до кратного "
+        "6 (партия/лоток выпечки, а не поштучно -- лучше немного лишнего, "
+        "чем недопечь целый лоток). Разбивка по часам и позициям -- из "
+        "фактического распределения за 90 дней ДО выбранной даты; итог за "
+        "день -- из ручного плана (см. таблицу выше), а если его нет -- "
+        "из прогноза."
+    )
+    fecha_tarea = st.date_input(
+        "Дата плана-задания", value=hoy + dt.timedelta(days=1),
+        min_value=fecha_min, key="plan_tarea_fecha",
+    )
+    tarea = _cache_plan_tarea_dia(engine, fecha_tarea.isoformat(), sucursal_filtro, 10, 6)
+    if tarea["total_dia"] is None:
+        st.info("Для этой даты нет ни плана, ни прогноза -- задание составить не из чего.")
+    else:
+        st.write(
+            f"Итого на {fecha_tarea.isoformat()}: **{tarea['total_dia_redondeado']} шт** "
+            f"(кратно 6; источник -- {tarea['fuente_total']}; до округления -- "
+            f"{tarea['total_dia']:.0f} шт)."
+        )
+        excel_bytes = _excel_plan_tarea(tarea, opcion_sucursal)
+        st.download_button(
+            "⬇️ Скачать план-задание (.xlsx)",
+            data=excel_bytes,
+            file_name=f"plan_tarea_{fecha_tarea.isoformat()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     # ---- Разбивка по позициям ---------------------------------------------
     # Штуки, не выручка -- для персонала важно, сколько ШТУК нужно

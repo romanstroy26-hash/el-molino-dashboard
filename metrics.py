@@ -12,13 +12,14 @@ metrics.py -- Блок 4: считает показатели из базы (db.
 """
 
 import datetime as dt
+import math
 from collections import defaultdict
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
 import tiempo
-from db import get_coffee_keywords
+from db import get_coffee_keywords, get_plan_produccion
 
 CAFETERIA_TIPOS = {"CAFETERIA", "FRAPPES"}
 
@@ -814,6 +815,105 @@ def carga_por_hora_panaderia(engine: Engine, sucursal: str | None = None,
             round(h["unidades"] / personal_dias_total, 2) if personal_dias_total else 0.0
         )
     return horas
+
+
+def _redondear_a_multiplo(valor: float, base: int) -> int:
+    """Redondea HACIA ARRIBA al múltiplo de `base` más cercano -- para un
+    plan de producción por charolas/lotes (p. ej. 6 piezas por charola),
+    quedarse corto de una charola completa (redondear hacia abajo o al más
+    cercano) significa faltante real en el mostrador; sobrar un poco de
+    algún producto es preferible a que falte."""
+    if valor <= 0 or base <= 0:
+        return 0
+    return math.ceil(valor / base) * base
+
+
+# Ventana de historia usada para calcular el REPARTO (qué % del día va a
+# cada hora, qué % a cada producto) -- necesita varias semanas de patrón
+# estable, no un solo día. Nunca incluye la fecha que se está planeando
+# (evita depender circularmente del día que aún no pasó, o volver a
+# contar el mismo día dos veces si ya pasó).
+_DIAS_HISTORIA_PLAN_TAREA = 90
+
+
+def plan_tarea_dia(engine: Engine, fecha: str, sucursal: str | None = None,
+                    n_productos: int = 10, multiplo: int = 6) -> dict:
+    """Plan-tarea de producción de Panadería para UN día concreto: cuántas
+    piezas hacer en total, repartidas por HORA y por POSICIÓN DE MENÚ, en
+    múltiplos de `multiplo` (charolas/lotes de horneado).
+
+    El TOTAL del día sale, en este orden de preferencia:
+      1. El plan manual de ese día (tabla plan_produccion), si existe.
+      2. Si no, el pronóstico de ese día (panaderia_real_y_pronostico) --
+         así la tarea se puede descargar incluso para un día que todavía
+         no se llenó a mano en la tabla de arriba.
+
+    Los REPARTOS (por hora, por producto) salen de _DIAS_HISTORIA_PLAN_TAREA
+    días ANTES de la fecha pedida (ver esa constante) -- el mix reciente de
+    qué se vende y a qué hora, no el de la fecha misma."""
+    target = dt.date.fromisoformat(fecha)
+    desde_historia = (target - dt.timedelta(days=_DIAS_HISTORIA_PLAN_TAREA)).isoformat()
+    hasta_historia = (target - dt.timedelta(days=1)).isoformat()
+
+    plan_filas = get_plan_produccion(engine, desde=fecha, hasta=fecha)
+    plan_dia = plan_filas[0]["unidades_plan"] if plan_filas else None
+
+    if plan_dia is not None:
+        total_dia = plan_dia
+        fuente_total = "план (введён вручную)"
+    else:
+        dias_pron = panaderia_real_y_pronostico(engine, desde=fecha, hasta=fecha, sucursal=sucursal)
+        total_dia = dias_pron[0]["pronostico_unidades"] if dias_pron else None
+        fuente_total = "прогноз (плана на этот день ещё нет)"
+
+    if total_dia is None:
+        return {
+            "fecha": fecha, "total_dia": None, "total_dia_redondeado": None,
+            "fuente_total": fuente_total, "multiplo": multiplo,
+            "por_hora": [], "por_producto": [],
+        }
+
+    por_hora = []
+    patron_horas = patron_horario_panaderia(engine, sucursal=sucursal,
+                                             desde=desde_historia, hasta=hasta_historia)
+    # Solo horas de operación (6-22, mismo rango que el resto del
+    # dashboard) -- sin este filtro, una venta aislada de madrugada (un
+    # cheque mal cerrado, un reloj distinto) redondea hacia arriba a una
+    # charola entera (6 piezas) para una hora en la que el punto ni
+    # siquiera abre.
+    patron_horas = [h for h in patron_horas if 6 <= h["hora"] <= 22]
+    total_historico_horas = sum(h["unidades"] for h in patron_horas)
+    for h in patron_horas:
+        if h["unidades"] <= 0:
+            continue
+        pct = h["unidades"] / total_historico_horas if total_historico_horas else 0.0
+        por_hora.append({
+            "hora": h["hora"],
+            "pct_historico": round(100 * pct, 1),
+            "unidades_plan": _redondear_a_multiplo(total_dia * pct, multiplo),
+        })
+
+    por_producto = []
+    top_productos = top_platillos_panaderia(engine, sucursal=sucursal,
+                                             desde=desde_historia, hasta=hasta_historia,
+                                             n=n_productos)
+    for p in top_productos:
+        pct = p["pct_unidades"] / 100
+        por_producto.append({
+            "platillo": p["platillo"],
+            "pct_historico": p["pct_unidades"],
+            "unidades_plan": _redondear_a_multiplo(total_dia * pct, multiplo),
+        })
+
+    return {
+        "fecha": fecha,
+        "total_dia": round(total_dia, 1),
+        "total_dia_redondeado": _redondear_a_multiplo(total_dia, multiplo),
+        "fuente_total": fuente_total,
+        "multiplo": multiplo,
+        "por_hora": por_hora,
+        "por_producto": por_producto,
+    }
 
 
 def analizar_desviacion_produccion(dias: list[dict], campo: str) -> dict | None:
