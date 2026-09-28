@@ -274,6 +274,27 @@ def test_admin_can_build_audience_and_campaign_from_segment():
     assert campaign.json()["recipient_count"] == 1
 
 
+def test_campaign_preview_rechecks_consent_before_activation():
+    client = make_client()
+    included = create_customer(client, marketing_consent=True)
+    excluded = client.post("/customers", json={"full_name": "Luis", "phone": "555-456", "marketing_consent": True}, headers=cashier_headers()).json()
+    headers = {"X-Admin-Key": "admin-test-key"}
+    campaign = client.post("/admin/campaigns", json={
+        "name": "Invitación", "channel": "sms", "message": "Ven por café",
+        "customer_ids": [included["id"], excluded["id"]],
+    }, headers=headers).json()
+    client.patch(f"/customers/{excluded['id']}", json={"marketing_consent": False}, headers=auth_headers(client, "555-456"))
+    path = f"/admin/campaigns/{campaign['id']}/preview"
+    assert client.get(path).status_code == 401
+    preview = client.get(path, headers=headers)
+    assert preview.status_code == 200
+    assert preview.json()["message"] == "Ven por café"
+    assert preview.json()["eligible_count"] == 1
+    assert preview.json()["excluded_count"] == 1
+    assert client.post(f"/admin/campaigns/{campaign['id']}/activate", headers=headers).status_code == 200
+    assert client.get(path, headers=headers).json()["excluded_count"] == 0
+
+
 def test_campaign_interactions_are_visible_in_analytics():
     client = make_client()
     customer = create_customer(client, marketing_consent=True)
