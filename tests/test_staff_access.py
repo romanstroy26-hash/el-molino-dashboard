@@ -47,6 +47,7 @@ def test_personal_codes_permissions_and_audit():
     assert app.get("/admin/audiences", headers=employee_headers).status_code == 200
     assert app.get("/admin/campaigns", headers=employee_headers).status_code == 403
     assert app.post("/admin/rewards", json={"name": "Café", "points_cost": 10}, headers=employee_headers).status_code == 403
+    assert app.get("/admin/rewards", headers=employee_headers).status_code == 403
     actions = app.get("/staff/actions", headers=owner_headers).json()
     assert any(row["full_name"] == "Ana" and row["action"].startswith("GET /admin/audiences") for row in actions)
     assert app.patch(f"/staff/team/{employee_id}", json={"active": False}, headers=owner_headers).status_code == 200
@@ -56,6 +57,24 @@ def test_personal_codes_permissions_and_audit():
     new_code = app.post(f"/staff/team/{employee_id}/reset-code", headers=owner_headers).json()["code"]
     assert app.post("/staff/login", json={"code": employee_code}).status_code == 401
     assert app.post("/staff/login", json={"code": new_code}).status_code == 200
+
+
+def test_reward_catalog_can_show_edit_and_pause_existing_rewards():
+    app = client()
+    code = app.post("/staff/bootstrap", json={"full_name": "Owner"}, headers={"X-Admin-Key": "admin-test-key"}).json()["code"]
+    token = app.post("/staff/login", json={"code": code}).json()["session"]
+    headers = {"X-Staff-Session": token}
+    created = app.post("/admin/rewards", json={"name": "Café", "description": "Una bebida", "points_cost": 25}, headers=headers)
+    assert created.status_code == 201
+    reward_id = created.json()["id"]
+    assert [reward["id"] for reward in app.get("/admin/rewards", headers=headers).json()] == [reward_id]
+    edited = app.patch(f"/admin/rewards/{reward_id}", json={"name": "Café grande", "points_cost": 30}, headers=headers)
+    assert edited.status_code == 200
+    assert edited.json()["name"] == "Café grande"
+    assert edited.json()["points_cost"] == 30
+    assert app.patch(f"/admin/rewards/{reward_id}", json={"active": False}, headers=headers).json()["active"] is False
+    assert app.get("/admin/rewards", headers=headers).json()[0]["active"] is False
+    assert app.patch(f"/admin/rewards/{reward_id}", json={"active": True}, headers=headers).json()["active"] is True
 
 
 def test_owner_recovery_revokes_previous_session():
