@@ -309,6 +309,7 @@ class WansoftReconciliationOut(APIModel):
     credited_amount: Decimal
     wansoft_amount: Decimal | None
     status: str
+    item_differences: list[str]
 
 
 class PurchaseHistoryItemOut(APIModel):
