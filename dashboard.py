@@ -841,9 +841,10 @@ def page_dashboard():
     st.caption(
         "«Напитки» здесь -- это группы меню CAFETERIA и FRAPPES (кофе, чай, "
         "матча, фраппе...), без учёта выпечки и бутилированных REFRESCOS. "
-        "«Кофе», «Фраппе» и «Остальные напитки» НЕ пересекаются -- кофейный "
-        "фраппе (например, F. Moka + Espresso) учтён только в «Кофе» -- "
-        "поэтому втроём они в точности складываются в «Напитки»."
+        "«Кофе», «Фраппе» и «Остальные напитки» НЕ пересекаются -- весь "
+        "фраппе, включая кофейный (например, F. Moka + Espresso), учтён "
+        "только в «Фраппе» -- поэтому втроём они в точности складываются "
+        "в «Напитки»."
     )
 
     # ---- Агрегаты за весь выбранный диапазон (для карточек) ------------------
@@ -962,6 +963,12 @@ def page_dashboard():
     if any(h["cafe_total"] or h["frappe_total"] or h["otras_bebidas_total"] for h in patron_horas):
         st.subheader("Когда продаются напитки, по часам дня")
         df_horas = pd.DataFrame(patron_horas)
+        # Часы вне работы точек (ночь) всегда пустые -- обрезаем их, чтобы
+        # график не тянулся от 0 до 23, а показывал только рабочий день.
+        _HORA_DESDE, _HORA_HASTA = 6, 22
+        df_horas = df_horas[
+            (df_horas["hora"] >= _HORA_DESDE) & (df_horas["hora"] <= _HORA_HASTA)
+        ]
 
         _KAT_HORAS = ["Кофе", "Фраппе", "Остальные напитки"]
         _COL_HORAS_PCT = {"Кофе": "cafe_total", "Фраппе": "frappe_total",
@@ -992,7 +999,10 @@ def page_dashboard():
         largo_horas["orden"] = largo_horas["categoria"].map(orden_h)
 
         grafico_horas = alt.Chart(largo_horas).mark_bar().encode(
-            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+            x=alt.X(
+                "hora:O", title="Час", axis=alt.Axis(labelAngle=0),
+                scale=alt.Scale(domain=list(range(_HORA_DESDE, _HORA_HASTA + 1))),
+            ),
             y=alt.Y("valor:Q", stack=apilado, title=titulo_h),
             color=alt.Color(
                 "categoria:N",

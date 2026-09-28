@@ -112,17 +112,14 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
     explicar un doble conteo cada vez):
 
       - bebidas   -- TODA la categoría "напитки" (CAFETERIA + FRAPPES).
-      - cafe      -- caliente+frío+frappé-con-café mezclados (is_coffee
-                     arriba) -- un frappé con espresso (F. Moka + Espresso)
-                     cuenta aquí, no en "frappe".
-      - frappe    -- SOLO frappé SIN café (frutas, malteadas...). Antes
-                     esta función también devolvía frappe_total = TODA la
-                     categoría FRAPPES (con café incluido) para comparar
-                     "cómo rinde el menú de frappés" aparte de "cuánto
-                     café se vende"; se quitó porque dos preguntas
-                     distintas sobre los mismos pesos, en el mismo
-                     gráfico, resultaban más confuso que útil -- si hace
-                     falta esa vista, folder aparte.
+      - cafe      -- solo café caliente/frío que NO es frappé (is_coffee
+                     arriba, excluyendo tipo_grupo FRAPPES).
+      - frappe    -- TODA la categoría FRAPPES, incluido el frappé con
+                     café (F. Moka + Espresso, etc.) -- antes ese frappé
+                     con café se contaba dentro de "cafe"; se movió aquí
+                     porque para el negocio "frappé" es una categoría de
+                     producto (bebida fría con hielo/blender), no una
+                     pregunta de "¿lleva café o no?".
       - otras     -- resto de CAFETERIA que no es café (chai, matcha,
                      taro, limonada, chocolate...).
 
@@ -165,13 +162,12 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
             ventas[key] += row["importe"]
             unid_ventas[key] += row["cantidad"]
 
-            es_cafe = is_coffee(row["platillo"], row["tipo_grupo"], keywords)
-            if es_cafe:
-                cafe[key] += row["importe"]
-                unid_cafe[key] += row["cantidad"]
-            elif row["tipo_grupo"] == "FRAPPES":
+            if row["tipo_grupo"] == "FRAPPES":
                 frappe[key] += row["importe"]
                 unid_frappe[key] += row["cantidad"]
+            elif is_coffee(row["platillo"], row["tipo_grupo"], keywords):
+                cafe[key] += row["importe"]
+                unid_cafe[key] += row["cantidad"]
             elif row["tipo_grupo"] == "CAFETERIA":
                 otras_bebidas[key] += row["importe"]
                 unid_otras_bebidas[key] += row["cantidad"]
@@ -263,13 +259,12 @@ def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
                 hora = dt.datetime.fromisoformat(row["hora_cierre"]).hour
             except (ValueError, TypeError):
                 continue
-            es_cafe = is_coffee(row["platillo"], row["tipo_grupo"], keywords)
-            if es_cafe:
-                cafe[hora] += row["importe"]
-                u_cafe[hora] += row["cantidad"]
-            elif row["tipo_grupo"] == "FRAPPES":
+            if row["tipo_grupo"] == "FRAPPES":
                 frappe[hora] += row["importe"]
                 u_frappe[hora] += row["cantidad"]
+            elif is_coffee(row["platillo"], row["tipo_grupo"], keywords):
+                cafe[hora] += row["importe"]
+                u_cafe[hora] += row["cantidad"]
             elif row["tipo_grupo"] == "CAFETERIA":
                 otras[hora] += row["importe"]
                 u_otras[hora] += row["cantidad"]
@@ -318,11 +313,10 @@ def top_platillos_bebidas(engine: Engine, sucursal: str | None = None,
     with engine.connect() as conn:
         for row in conn.execute(text(sql), params).mappings():
             clave = row["platillo"] or "(без названия)"
-            es_cafe = is_coffee(row["platillo"], row["tipo_grupo"], keywords)
-            if es_cafe:
-                destino = cafe
-            elif row["tipo_grupo"] == "FRAPPES":
+            if row["tipo_grupo"] == "FRAPPES":
                 destino = frappe
+            elif is_coffee(row["platillo"], row["tipo_grupo"], keywords):
+                destino = cafe
             elif row["tipo_grupo"] == "CAFETERIA":
                 destino = otras
             else:
