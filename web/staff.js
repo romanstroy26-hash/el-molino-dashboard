@@ -311,30 +311,33 @@ byId("load-actions").addEventListener("click", async () => {
   } catch (error) { setMessage("manager-message", error.message, true); }
 });
 
-byId("load-reconciliation").addEventListener("click", async () => {
-  setMessage("reconciliation-message", "Comparando tickets…");
+let reconciliationRows = [];
+const reconciliationLabels = {
+  pending_import: "Pendiente de importar",
+  amount_mismatch: "Importe diferente",
+  items_mismatch: "Productos diferentes",
+  unverifiable: "Número no verificable",
+};
+
+function visibleReconciliationRows() {
+  const filter = byId("reconciliation-filter").value;
+  return reconciliationRows.filter((row) => row.status !== "matched" && (filter === "all" || row.status === filter));
+}
+
+function renderReconciliation() {
   const container = byId("reconciliation-results"); container.replaceChildren();
-  try {
-    const rows = await managerRequest("/admin/wansoft-reconciliation");
-    const verified = rows.filter((row) => row.status === "matched").length;
-    const review = rows.filter((row) => row.status !== "matched");
-    if (!rows.length) {
-      setMessage("reconciliation-message", "Todavía no hay tickets acreditados.");
-      return;
-    }
-    setMessage("reconciliation-message", `${verified} de ${rows.length} tickets coinciden. ${review.length} requieren revisión.`);
-    const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
-    const labels = {
-      pending_import: "Pendiente de importar",
-      amount_mismatch: "Importe diferente",
-      items_mismatch: "Productos diferentes",
-      unverifiable: "Número no verificable",
-    };
-    review.forEach((row) => {
+  const review = reconciliationRows.filter((row) => row.status !== "matched");
+  const visible = visibleReconciliationRows();
+  const verified = reconciliationRows.length - review.length;
+  setMessage("reconciliation-message", `${verified} de ${reconciliationRows.length} tickets coinciden. ${review.length} requieren revisión. Mostrando ${visible.length}.`);
+  byId("export-reconciliation").disabled = visible.length === 0;
+  if (!visible.length && review.length) container.textContent = "No hay tickets en este filtro.";
+  const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+  visible.forEach((row) => {
       const card = document.createElement("article");
       card.className = `staff-result reconciliation-result ${row.status}`;
       const badge = document.createElement("span"); badge.className = "reconciliation-badge";
-      badge.textContent = labels[row.status] || "Revisar";
+      badge.textContent = reconciliationLabels[row.status] || "Revisar";
       const title = document.createElement("strong"); title.textContent = `Ticket ${row.external_reference}`;
       const detail = document.createElement("p");
       const actual = row.wansoft_amount === null ? "sin venta Wansoft cargada" : `Wansoft ${money.format(Number(row.wansoft_amount))}`;
@@ -348,7 +351,46 @@ byId("load-reconciliation").addEventListener("click", async () => {
         card.append(differences);
       }
       container.append(card);
-    });
+  });
+}
+
+function csvCell(value) {
+  let text = String(value ?? "");
+  if (/^[\s\u0000-\u001f]*[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+byId("reconciliation-filter").addEventListener("change", renderReconciliation);
+byId("export-reconciliation").addEventListener("click", () => {
+  const rows = visibleReconciliationRows();
+  if (!rows.length) return;
+  const columns = ["Ticket", "Estado", "Cliente", "Fecha", "Acreditado MXN", "Wansoft MXN", "Diferencias de productos"];
+  const lines = [columns, ...rows.map((row) => [row.external_reference, reconciliationLabels[row.status] || row.status,
+    row.customer_name, row.purchased_at, row.credited_amount, row.wansoft_amount ?? "",
+    (row.item_differences || []).join(" | ")])];
+  const blob = new Blob(["\uFEFF", lines.map((line) => line.map(csvCell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url; link.download = `el-molino-tickets-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+byId("load-reconciliation").addEventListener("click", async () => {
+  setMessage("reconciliation-message", "Comparando tickets…");
+  byId("reconciliation-tools").hidden = true;
+  byId("reconciliation-results").replaceChildren();
+  reconciliationRows = [];
+  try {
+    const rows = await managerRequest("/admin/wansoft-reconciliation");
+    if (!rows.length) {
+      setMessage("reconciliation-message", "Todavía no hay tickets acreditados.");
+      return;
+    }
+    reconciliationRows = rows;
+    byId("reconciliation-filter").value = "all";
+    byId("reconciliation-tools").hidden = rows.every((row) => row.status === "matched");
+    renderReconciliation();
   } catch (error) { setMessage("reconciliation-message", error.message, true); }
 });
 

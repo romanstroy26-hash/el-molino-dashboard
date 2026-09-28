@@ -96,6 +96,17 @@
             <p class="muted">Compara los últimos 50 tickets acreditados con las ventas cargadas desde Wansoft. Solo muestra diferencias; no modifica puntos.</p>
             <button id="load-reconciliation" type="button">Revisar tickets</button>
             <p id="reconciliation-message" class="message" role="status"></p>
+            <div id="reconciliation-tools" class="reconciliation-tools" hidden>
+              <label for="reconciliation-filter">Mostrar</label>
+              <select id="reconciliation-filter">
+                <option value="all">Todas las diferencias</option>
+                <option value="pending_import">Pendientes de importar</option>
+                <option value="amount_mismatch">Importe diferente</option>
+                <option value="items_mismatch">Productos diferentes</option>
+                <option value="unverifiable">Número no verificable</option>
+              </select>
+              <button id="export-reconciliation" type="button" class="secondary">Descargar CSV</button>
+            </div>
             <div id="reconciliation-results" class="staff-results"></div>
           </section>
           <section class="card">
