@@ -942,6 +942,46 @@ def page_dashboard():
                 ],
             ).properties(height=32 * len(df_suc) + 40)
             st.altair_chart(grafico_suc, width="stretch")
+
+            st.dataframe(
+                df_suc.rename(columns={
+                    "sucursal": "Точка",
+                    "cafe_pct_ventas": "Доля кофе, %",
+                    "cafe_total": "Выручка кофе, $",
+                    "unidades_cafe": "Кофе, шт",
+                    "ventas_totales": "Продажи точки всего, $",
+                }),
+                width="stretch", hide_index=True,
+                column_config={
+                    "Доля кофе, %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Выручка кофе, $": st.column_config.NumberColumn(format="%.0f $"),
+                    "Кофе, шт": st.column_config.NumberColumn(format="%.0f"),
+                    "Продажи точки всего, $": st.column_config.NumberColumn(format="%.0f $"),
+                },
+            )
+
+            fila_pct_max = df_suc.loc[df_suc["cafe_pct_ventas"].idxmax()]
+            fila_pct_min = df_suc.loc[df_suc["cafe_pct_ventas"].idxmin()]
+            fila_unid_max = df_suc.loc[df_suc["unidades_cafe"].idxmax()]
+            fila_unid_min = df_suc.loc[df_suc["unidades_cafe"].idxmin()]
+
+            partes = []
+            if fila_pct_max["sucursal"] != fila_pct_min["sucursal"]:
+                partes.append(
+                    f"по доле кофе в продажах {fila_pct_max['sucursal']} впереди на "
+                    f"{fila_pct_max['cafe_pct_ventas'] - fila_pct_min['cafe_pct_ventas']:.1f} пт "
+                    f"({fila_pct_max['cafe_pct_ventas']:.1f}% против "
+                    f"{fila_pct_min['cafe_pct_ventas']:.1f}%)"
+                )
+            if fila_unid_max["sucursal"] != fila_unid_min["sucursal"]:
+                partes.append(
+                    f"по штукам {fila_unid_max['sucursal']} продал на "
+                    f"{fila_unid_max['unidades_cafe'] - fila_unid_min['unidades_cafe']:,.0f} шт "
+                    f"больше кофе, чем {fila_unid_min['sucursal']}"
+                )
+            if partes:
+                st.caption("Итоговая разница: " + "; ".join(partes) + ".")
+
             st.caption(
                 "Доля кофе -- от ВСЕХ продаж точки (не только напитков), чтобы "
                 "сравнение не зависело от размера точки в деньгах. Диапазон "
