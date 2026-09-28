@@ -919,76 +919,6 @@ def page_dashboard():
             f"предыдущий период такой же длины."
         )
 
-    # ---- Сравнение точек по кофе ---------------------------------------------
-    # Единственный блок на странице, который НЕ подчиняется фильтру "Точка"
-    # слева -- специально: остальная страница акотает до одной точки (или
-    # суммирует все), а здесь наоборот нужно видеть точки РЯДОМ, чтобы
-    # сравнить их между собой.
-    if len(sucursales) > 1:
-        st.subheader("Кофе по точкам")
-        cafe_suc = _cache_cafe_por_sucursal(engine, desde.isoformat(), hasta.isoformat())
-        if cafe_suc:
-            df_suc = pd.DataFrame(cafe_suc)
-            grafico_suc = alt.Chart(df_suc).mark_bar().encode(
-                x=alt.X("cafe_pct_ventas:Q", title="Доля кофе в продажах точки, %"),
-                y=alt.Y("sucursal:N", title=None, sort="-x"),
-                color=alt.value(_COLOR_KATEGORII["Кофе"]),
-                tooltip=[
-                    alt.Tooltip("sucursal:N", title="Точка"),
-                    alt.Tooltip("cafe_pct_ventas:Q", title="Доля кофе, %", format=".1f"),
-                    alt.Tooltip("cafe_total:Q", title="Выручка кофе, $", format=",.0f"),
-                    alt.Tooltip("unidades_cafe:Q", title="Кофе, шт", format=",.0f"),
-                    alt.Tooltip("ventas_totales:Q", title="Продажи точки всего, $", format=",.0f"),
-                ],
-            ).properties(height=32 * len(df_suc) + 40)
-            st.altair_chart(grafico_suc, width="stretch")
-
-            st.dataframe(
-                df_suc.rename(columns={
-                    "sucursal": "Точка",
-                    "cafe_pct_ventas": "Доля кофе, %",
-                    "cafe_total": "Выручка кофе, $",
-                    "unidades_cafe": "Кофе, шт",
-                    "ventas_totales": "Продажи точки всего, $",
-                }),
-                width="stretch", hide_index=True,
-                column_config={
-                    "Доля кофе, %": st.column_config.NumberColumn(format="%.1f%%"),
-                    "Выручка кофе, $": st.column_config.NumberColumn(format="%.0f $"),
-                    "Кофе, шт": st.column_config.NumberColumn(format="%.0f"),
-                    "Продажи точки всего, $": st.column_config.NumberColumn(format="%.0f $"),
-                },
-            )
-
-            fila_pct_max = df_suc.loc[df_suc["cafe_pct_ventas"].idxmax()]
-            fila_pct_min = df_suc.loc[df_suc["cafe_pct_ventas"].idxmin()]
-            fila_unid_max = df_suc.loc[df_suc["unidades_cafe"].idxmax()]
-            fila_unid_min = df_suc.loc[df_suc["unidades_cafe"].idxmin()]
-
-            partes = []
-            if fila_pct_max["sucursal"] != fila_pct_min["sucursal"]:
-                partes.append(
-                    f"по доле кофе в продажах {fila_pct_max['sucursal']} впереди на "
-                    f"{fila_pct_max['cafe_pct_ventas'] - fila_pct_min['cafe_pct_ventas']:.1f} пт "
-                    f"({fila_pct_max['cafe_pct_ventas']:.1f}% против "
-                    f"{fila_pct_min['cafe_pct_ventas']:.1f}%)"
-                )
-            if fila_unid_max["sucursal"] != fila_unid_min["sucursal"]:
-                partes.append(
-                    f"по штукам {fila_unid_max['sucursal']} продал на "
-                    f"{fila_unid_max['unidades_cafe'] - fila_unid_min['unidades_cafe']:,.0f} шт "
-                    f"больше кофе, чем {fila_unid_min['sucursal']}"
-                )
-            if partes:
-                st.caption("Итоговая разница: " + "; ".join(partes) + ".")
-
-            st.caption(
-                "Доля кофе -- от ВСЕХ продаж точки (не только напитков), чтобы "
-                "сравнение не зависело от размера точки в деньгах. Диапазон "
-                "дат -- из фильтра слева, но сама точка -- нет: здесь всегда "
-                "все точки сразу, вне зависимости от выбора «Точка» выше."
-            )
-
     # ---- ОБЩИЙ график: 4 категории, измерение -- из фильтра слева -----------
     st.subheader(f"Динамика: {medida_label.lower()}")
     largo = df.melt(
@@ -1189,6 +1119,77 @@ def page_dashboard():
         "распознавания кофе -- на странице «Настройки» слева. Фраппе "
         "определяется по группе меню FRAPPES, а не по ключевым словам."
     )
+
+    # ---- Сравнение точек по кофе ---------------------------------------------
+    # Единственный блок на странице, который НЕ подчиняется фильтру "Точка"
+    # слева -- специально: остальная страница акотает до одной точки (или
+    # суммирует все), а здесь наоборот нужно видеть точки РЯДОМ, чтобы
+    # сравнить их между собой. Внизу страницы -- это сравнение читают
+    # реже и после того, как посмотрели общую картину выше.
+    if len(sucursales) > 1:
+        st.subheader("Кофе по точкам")
+        cafe_suc = _cache_cafe_por_sucursal(engine, desde.isoformat(), hasta.isoformat())
+        if cafe_suc:
+            df_suc = pd.DataFrame(cafe_suc)
+            grafico_suc = alt.Chart(df_suc).mark_bar().encode(
+                x=alt.X("cafe_pct_ventas:Q", title="Доля кофе в продажах точки, %"),
+                y=alt.Y("sucursal:N", title=None, sort="-x"),
+                color=alt.value(_COLOR_KATEGORII["Кофе"]),
+                tooltip=[
+                    alt.Tooltip("sucursal:N", title="Точка"),
+                    alt.Tooltip("cafe_pct_ventas:Q", title="Доля кофе, %", format=".1f"),
+                    alt.Tooltip("cafe_total:Q", title="Выручка кофе, $", format=",.0f"),
+                    alt.Tooltip("unidades_cafe:Q", title="Кофе, шт", format=",.0f"),
+                    alt.Tooltip("ventas_totales:Q", title="Продажи точки всего, $", format=",.0f"),
+                ],
+            ).properties(height=32 * len(df_suc) + 40)
+            st.altair_chart(grafico_suc, width="stretch")
+
+            st.dataframe(
+                df_suc.rename(columns={
+                    "sucursal": "Точка",
+                    "cafe_pct_ventas": "Доля кофе, %",
+                    "cafe_total": "Выручка кофе, $",
+                    "unidades_cafe": "Кофе, шт",
+                    "ventas_totales": "Продажи точки всего, $",
+                }),
+                width="stretch", hide_index=True,
+                column_config={
+                    "Доля кофе, %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Выручка кофе, $": st.column_config.NumberColumn(format="%.0f $"),
+                    "Кофе, шт": st.column_config.NumberColumn(format="%.0f"),
+                    "Продажи точки всего, $": st.column_config.NumberColumn(format="%.0f $"),
+                },
+            )
+
+            fila_pct_max = df_suc.loc[df_suc["cafe_pct_ventas"].idxmax()]
+            fila_pct_min = df_suc.loc[df_suc["cafe_pct_ventas"].idxmin()]
+            fila_unid_max = df_suc.loc[df_suc["unidades_cafe"].idxmax()]
+            fila_unid_min = df_suc.loc[df_suc["unidades_cafe"].idxmin()]
+
+            partes = []
+            if fila_pct_max["sucursal"] != fila_pct_min["sucursal"]:
+                partes.append(
+                    f"по доле кофе в продажах {fila_pct_max['sucursal']} впереди на "
+                    f"{fila_pct_max['cafe_pct_ventas'] - fila_pct_min['cafe_pct_ventas']:.1f} пт "
+                    f"({fila_pct_max['cafe_pct_ventas']:.1f}% против "
+                    f"{fila_pct_min['cafe_pct_ventas']:.1f}%)"
+                )
+            if fila_unid_max["sucursal"] != fila_unid_min["sucursal"]:
+                partes.append(
+                    f"по штукам {fila_unid_max['sucursal']} продал на "
+                    f"{fila_unid_max['unidades_cafe'] - fila_unid_min['unidades_cafe']:,.0f} шт "
+                    f"больше кофе, чем {fila_unid_min['sucursal']}"
+                )
+            if partes:
+                st.caption("Итоговая разница: " + "; ".join(partes) + ".")
+
+            st.caption(
+                "Доля кофе -- от ВСЕХ продаж точки (не только напитков), чтобы "
+                "сравнение не зависело от размера точки в деньгах. Диапазон "
+                "дат -- из фильтра слева, но сама точка -- нет: здесь всегда "
+                "все точки сразу, вне зависимости от выбора «Точка» выше."
+            )
 
 
 # =============================================================================
