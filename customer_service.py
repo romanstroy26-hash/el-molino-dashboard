@@ -10,11 +10,13 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from hashlib import sha256
+import re
+from typing import Callable
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import Engine
-from phone_numbers import normalize_customer_phone
+from phone_numbers import mexican_sms_number, normalize_customer_phone
 
 from customer_schema import (
     customer_events,
@@ -400,10 +402,123 @@ def preview_campaign(engine: Engine, campaign_id: str) -> dict:
             customers.c.status == "active",
             customers.c.marketing_consent.is_(True),
         )).scalar_one()
+        pending_sms = conn.execute(select(func.count()).select_from(
+            campaign_recipients.join(customers, customers.c.id == campaign_recipients.c.customer_id)
+        ).where(
+            campaign_recipients.c.campaign_id == campaign_id,
+            campaign_recipients.c.status == "pending",
+            campaign_recipients.c.sent_at.is_(None),
+            customers.c.status == "active",
+            customers.c.marketing_consent.is_(True),
+        )).scalar_one()
+        delivery_states = dict(conn.execute(select(campaign_recipients.c.status, func.count())
+            .where(campaign_recipients.c.campaign_id == campaign_id)
+            .group_by(campaign_recipients.c.status)).all())
+        sent_sms = conn.execute(select(func.count()).select_from(campaign_recipients).where(
+            campaign_recipients.c.campaign_id == campaign_id,
+            campaign_recipients.c.sent_at.is_not(None),
+        )).scalar_one()
     return {"id": campaign_id, "name": campaign["name"], "channel": campaign["channel"],
             "message": campaign["message"], "status": campaign["status"],
             "starts_at": campaign["starts_at"], "ends_at": campaign["ends_at"],
-            "eligible_count": int(eligible), "excluded_count": int(assigned - eligible)}
+            "eligible_count": int(eligible), "excluded_count": int(assigned - eligible),
+            "pending_sms_count": int(pending_sms),
+            "sent_sms_count": int(sent_sms),
+            "uncertain_sms_count": int(delivery_states.get("uncertain", 0) + delivery_states.get("sending", 0)),
+            "invalid_phone_count": int(delivery_states.get("invalid_phone", 0))}
+
+
+def dispatch_sms_campaign(engine: Engine, campaign_id: str,
+                          send_message: Callable[[str, str], None], limit: int = 5) -> dict:
+    """Claim a small batch before calling the provider; uncertain attempts are never retried."""
+    now = _now()
+    with engine.connect() as conn:
+        campaign = conn.execute(select(campaigns).where(campaigns.c.id == campaign_id)).mappings().first()
+        if not campaign or campaign["status"] != "active" or campaign["channel"] != "sms":
+            raise CustomerError("La campaña SMS debe estar activa")
+        message = campaign["message"] or ""
+        if not message.strip() or len(message) > 160:
+            raise CustomerError("El mensaje SMS debe tener entre 1 y 160 caracteres")
+        if (campaign["starts_at"] and campaign["starts_at"] > now) or (campaign["ends_at"] and campaign["ends_at"] < now):
+            raise CustomerError("La campaña no está dentro de su periodo de envío")
+        recipients = conn.execute(select(campaign_recipients.c.id, campaign_recipients.c.customer_id,
+                                         customers.c.phone)
+            .join(customers, customers.c.id == campaign_recipients.c.customer_id)
+            .where(campaign_recipients.c.campaign_id == campaign_id,
+                   campaign_recipients.c.status == "pending",
+                   campaign_recipients.c.sent_at.is_(None),
+                   customers.c.status == "active",
+                   customers.c.marketing_consent.is_(True))
+            .order_by(campaign_recipients.c.id).limit(limit)).mappings().all()
+
+    result = {"sent": 0, "uncertain": 0, "invalid_phone": 0}
+    for recipient in recipients:
+        with engine.begin() as conn:
+            claimed = conn.execute(update(campaign_recipients).where(
+                campaign_recipients.c.id == recipient["id"],
+                campaign_recipients.c.status == "pending",
+                campaign_recipients.c.sent_at.is_(None),
+                campaign_recipients.c.customer_id.in_(select(customers.c.id).where(
+                    customers.c.status == "active", customers.c.marketing_consent.is_(True))),
+            ).values(status="sending")).rowcount == 1
+        if not claimed:
+            continue
+        try:
+            mexican_sms_number(recipient["phone"] or "")
+        except ValueError:
+            state = "invalid_phone"
+        else:
+            try:
+                send_message(recipient["phone"], message)
+            except Exception:
+                state = "uncertain"
+            else:
+                state = "sent"
+        with engine.begin() as conn:
+            conn.execute(update(campaign_recipients).where(
+                campaign_recipients.c.id == recipient["id"],
+                campaign_recipients.c.status == "sending",
+            ).values(status=state, sent_at=_now() if state == "sent" else None))
+        result[state] += 1
+    result["remaining"] = preview_campaign(engine, campaign_id)["pending_sms_count"]
+    return result
+
+
+def list_campaign_deliveries(engine: Engine, campaign_id: str, limit: int = 100, offset: int = 0) -> dict:
+    """Return masked recipient outcomes for a manager's SMS audit."""
+    with engine.connect() as conn:
+        channel = conn.execute(select(campaigns.c.channel).where(campaigns.c.id == campaign_id)).scalar_one_or_none()
+        if channel != "sms":
+            raise CustomerError("La campaña SMS no existe")
+        total = conn.execute(select(func.count()).select_from(campaign_recipients).where(
+            campaign_recipients.c.campaign_id == campaign_id,
+        )).scalar_one()
+        rows = conn.execute(select(customers.c.full_name, customers.c.phone, customers.c.status.label("customer_status"),
+                                   customers.c.marketing_consent, campaign_recipients.c.status,
+                                   campaign_recipients.c.sent_at)
+            .join(customers, customers.c.id == campaign_recipients.c.customer_id)
+            .where(campaign_recipients.c.campaign_id == campaign_id)
+            .order_by(customers.c.full_name, campaign_recipients.c.id)
+            .limit(limit).offset(offset)).mappings().all()
+    deliveries = []
+    for row in rows:
+        if row["sent_at"] is not None:
+            delivery_status = "accepted"
+        elif row["status"] in {"sending", "uncertain"}:
+            delivery_status = "uncertain"
+        elif row["status"] == "invalid_phone":
+            delivery_status = "invalid_phone"
+        elif row["customer_status"] != "active" or not row["marketing_consent"]:
+            delivery_status = "excluded"
+        elif row["status"] in {"opened", "clicked"}:
+            delivery_status = "seen_in_club"
+        else:
+            delivery_status = "pending"
+        digits = re.sub(r"\D", "", row["phone"] or "")
+        deliveries.append({"customer_name": row["full_name"],
+                           "phone_masked": f"•••• {digits[-4:]}" if len(digits) >= 4 else "Sin teléfono",
+                           "status": delivery_status, "sent_at": row["sent_at"]})
+    return {"total_count": int(total), "offset": offset, "rows": deliveries}
 
 
 def list_customer_campaigns(engine: Engine, customer_id: str) -> list[dict]:
@@ -579,7 +694,10 @@ def record_campaign_event(engine: Engine, customer_id: str, campaign_id: str, ev
             id=event_id, campaign_id=campaign_id, customer_id=customer_id,
             event_type=event_type, occurred_at=now,
         ))
-        conn.execute(update(campaign_recipients).where(campaign_recipients.c.id == recipient["id"]).values(status=event_type))
+        conn.execute(update(campaign_recipients).where(
+            campaign_recipients.c.id == recipient["id"],
+            campaign_recipients.c.status.in_(("pending", "opened", "clicked")),
+        ).values(status=event_type))
     return event_id
 
 

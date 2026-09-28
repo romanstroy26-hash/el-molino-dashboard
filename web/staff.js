@@ -437,7 +437,7 @@ async function loadCampaigns() {
         const previewBox = document.createElement("div"); previewBox.className = "campaign-preview"; previewBox.hidden = true;
         const previewCount = document.createElement("strong");
         const previewText = document.createElement("p");
-        const previewNote = document.createElement("p"); previewNote.textContent = "Se verá en el Club. No se envía ningún SMS ni email.";
+        const previewNote = document.createElement("p"); previewNote.textContent = "La activación solo muestra la campaña en el Club. El envío de SMS requiere otra acción.";
         const activate = document.createElement("button"); activate.type = "button"; activate.textContent = "Activar en el Club";
         previewBox.append(previewCount, previewText, previewNote, activate);
         const showPreview = async () => {
@@ -461,6 +461,72 @@ async function loadCampaigns() {
           } catch (error) { setMessage("campaign-list-message", error.message, true); }
         });
         card.append(previewButton, previewBox);
+      } else if (campaign.channel === "sms") {
+        const previewButton = document.createElement("button"); previewButton.type = "button"; previewButton.className = "secondary"; previewButton.textContent = "Revisar envío SMS";
+        const auditButton = document.createElement("button"); auditButton.type = "button"; auditButton.className = "secondary"; auditButton.textContent = "Ver estado de SMS";
+        const auditBox = document.createElement("div"); auditBox.className = "campaign-audit"; auditBox.hidden = true;
+        const auditSummary = document.createElement("p");
+        const auditList = document.createElement("div"); auditList.className = "staff-results";
+        const auditMore = document.createElement("button"); auditMore.type = "button"; auditMore.className = "secondary"; auditMore.textContent = "Mostrar más";
+        auditBox.append(auditSummary, auditList, auditMore);
+        let auditOffset = 0;
+        const deliveryLabels = { accepted: "Aceptado por LabsMobile", uncertain: "Sin confirmación", invalid_phone: "Teléfono inválido", excluded: "Sin consentimiento vigente", seen_in_club: "Visto en el Club", pending: "Pendiente" };
+        const loadAudit = async (reset = false) => {
+          if (reset) { auditOffset = 0; auditList.replaceChildren(); }
+          const report = await managerRequest(`/admin/campaigns/${campaign.id}/deliveries?offset=${auditOffset}`);
+          report.rows.forEach((delivery) => {
+            const row = document.createElement("div"); row.className = "campaign-audit-row";
+            const customer = document.createElement("strong"); customer.textContent = `${delivery.customer_name} · ${delivery.phone_masked}`;
+            const outcome = document.createElement("span"); outcome.textContent = deliveryLabels[delivery.status] || delivery.status;
+            row.append(customer, outcome); auditList.append(row);
+          });
+          auditOffset += report.rows.length;
+          auditSummary.textContent = `Mostrando ${auditOffset} de ${report.total_count} destinatarios.`;
+          auditMore.hidden = auditOffset >= report.total_count;
+          auditBox.hidden = false;
+        };
+        auditButton.addEventListener("click", async () => {
+          try { await loadAudit(true); }
+          catch (error) { setMessage("campaign-list-message", error.message, true); }
+        });
+        auditMore.addEventListener("click", async () => {
+          try { await loadAudit(); }
+          catch (error) { setMessage("campaign-list-message", error.message, true); }
+        });
+        const previewBox = document.createElement("div"); previewBox.className = "campaign-preview"; previewBox.hidden = true;
+        const previewCount = document.createElement("strong");
+        const previewText = document.createElement("p");
+        const previewNote = document.createElement("p"); previewNote.textContent = "Cada envío puede generar cargos en LabsMobile. Los intentos sin confirmación no se reenvían automáticamente.";
+        const sendButton = document.createElement("button"); sendButton.type = "button"; sendButton.textContent = "Enviar hasta 5 SMS";
+        const sendResult = document.createElement("p");
+        previewBox.append(previewCount, previewText, previewNote, sendButton, sendResult);
+        const showPreview = async () => {
+          const preview = await managerRequest(`/admin/campaigns/${campaign.id}/preview`);
+          previewCount.textContent = `${preview.pending_sms_count} pendientes · ${preview.sent_sms_count} aceptados · ${preview.uncertain_sms_count} sin confirmación · ${preview.invalid_phone_count} teléfonos inválidos · ${preview.excluded_count} sin consentimiento vigente`;
+          previewText.textContent = preview.message || "Sin mensaje";
+          sendButton.disabled = preview.pending_sms_count === 0 || !preview.message || preview.message.length > 160;
+          previewNote.textContent = preview.message?.length > 160
+            ? "El SMS supera 160 caracteres; crea otra campaña con un texto más corto."
+            : "Cada envío puede generar cargos en LabsMobile. Los intentos sin confirmación no se reenvían automáticamente.";
+          previewBox.hidden = false;
+          return preview;
+        };
+        previewButton.addEventListener("click", async () => {
+          try { await showPreview(); }
+          catch (error) { setMessage("campaign-list-message", error.message, true); }
+        });
+        sendButton.addEventListener("click", async () => {
+          try {
+            const preview = await showPreview();
+            if (sendButton.disabled || !confirm(`¿Enviar hasta ${Math.min(preview.pending_sms_count, 5)} SMS de ${campaign.name}? Puede generar cargos.`)) return;
+            sendButton.disabled = true;
+            const result = await managerRequest(`/admin/campaigns/${campaign.id}/send-sms`, { method: "POST" });
+            sendResult.textContent = `${result.sent} aceptados · ${result.uncertain} sin confirmación · ${result.invalid_phone} teléfonos inválidos · ${result.remaining} pendientes.`;
+            await showPreview();
+            if (!auditBox.hidden) await loadAudit(true);
+          } catch (error) { setMessage("campaign-list-message", error.message, true); }
+        });
+        card.append(previewButton, auditButton, previewBox, auditBox);
       }
       container.append(card);
     });
