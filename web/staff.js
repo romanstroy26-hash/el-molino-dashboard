@@ -19,6 +19,11 @@ document.querySelectorAll("[data-staff-view]").forEach((button) => button.addEve
 }));
 document.querySelectorAll("[data-manager-view]").forEach((button) => button.addEventListener("click", () => {
   switchView("[data-manager-view]", "managerView", button.dataset.managerView);
+  if (button.dataset.managerView === "rewards-section") loadRewards();
+}));
+document.querySelectorAll("[data-jump-manager]").forEach((button) => button.addEventListener("click", () => {
+  switchView("[data-manager-view]", "managerView", button.dataset.jumpManager);
+  if (button.dataset.jumpManager === "rewards-section") loadRewards();
 }));
 document.querySelectorAll("[data-cashier-view]").forEach((button) => button.addEventListener("click", () => {
   switchView("[data-cashier-view]", "cashierView", button.dataset.cashierView);
@@ -56,10 +61,12 @@ function showStaffLogin() {
   byId("staff-account").hidden = true;
   document.querySelector(".staff-tabs").hidden = true;
   document.querySelector(".staff-workspace").hidden = true;
+  document.body.classList.remove("staff-signed-in");
 }
 
 function showStaffWorkspace(user) {
   staffUser = user;
+  document.body.classList.add("staff-signed-in");
   byId("staff-login").hidden = true;
   byId("staff-account").hidden = false;
   byId("staff-account-name").textContent = user.full_name;
@@ -68,12 +75,15 @@ function showStaffWorkspace(user) {
   const cashierAllowed = user.is_owner || user.permissions.includes("cashier");
   document.querySelector('[data-staff-view="cashier-view"]').hidden = !cashierAllowed;
   const managerButtons = [...document.querySelectorAll("[data-manager-view]")];
-  managerButtons.forEach((button) => { button.hidden = !(user.is_owner || user.permissions.includes(button.dataset.permission)); });
+  const canManage = user.is_owner || user.permissions.some((permission) => permission !== "cashier");
+  managerButtons.forEach((button) => { button.hidden = !(user.is_owner || button.dataset.permission === "overview" && canManage || user.permissions.includes(button.dataset.permission)); });
+  document.querySelectorAll("[data-jump-manager]").forEach((button) => { button.hidden = !(user.is_owner || user.permissions.includes(button.dataset.permission)); });
   const managerAllowed = managerButtons.some((button) => !button.hidden);
   document.querySelector('[data-staff-view="manager-view"]').hidden = !managerAllowed;
   if (managerAllowed) switchView("[data-manager-view]", "managerView", managerButtons.find((button) => !button.hidden).dataset.managerView);
   switchView("[data-staff-view]", "staffView", cashierAllowed ? "cashier-view" : "manager-view");
   if (user.is_owner) loadTeam();
+  if (user.is_owner || user.permissions.includes("rewards")) loadRewards();
 }
 
 byId("staff-login-form").addEventListener("submit", async (event) => {
@@ -503,12 +513,84 @@ byId("load-reconciliation").addEventListener("click", async () => {
   } catch (error) { setMessage("reconciliation-message", error.message, true); }
 });
 
+let rewardsCatalog = [];
+
+function rewardLine(label, value) {
+  const line = document.createElement("p");
+  const title = document.createElement("span"); title.textContent = `${label}: `;
+  const content = document.createElement("strong"); content.textContent = value;
+  line.append(title, content);
+  return line;
+}
+
+function renderRewards() {
+  const list = byId("reward-list"); list.replaceChildren();
+  const active = rewardsCatalog.filter((reward) => reward.active).length;
+  byId("overview-reward-count").textContent = `${active} activas · ${rewardsCatalog.length} en total`;
+  if (!rewardsCatalog.length) {
+    const empty = document.createElement("p"); empty.className = "reward-empty";
+    empty.textContent = "Aún no hay recompensas. Crea la primera a la derecha.";
+    list.append(empty); return;
+  }
+  rewardsCatalog.forEach((reward) => {
+    const card = document.createElement("article"); card.className = "reward-card";
+    const header = document.createElement("div"); header.className = "reward-card-header";
+    const name = document.createElement("h4"); name.textContent = reward.name;
+    const state = document.createElement("span"); state.className = `reward-state ${reward.active ? "is-active" : "is-paused"}`;
+    state.textContent = reward.active ? "Activa" : "Pausada";
+    header.append(name, state); card.append(header);
+    if (reward.description) { const description = document.createElement("p"); description.className = "reward-description"; description.textContent = reward.description; card.append(description); }
+    card.append(rewardLine("Costo", `${reward.points_cost} puntos`));
+    const actions = document.createElement("div"); actions.className = "reward-actions";
+    const edit = document.createElement("button"); edit.type = "button"; edit.className = "secondary"; edit.textContent = "Editar";
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "secondary";
+    toggle.textContent = reward.active ? "Pausar" : "Activar";
+    actions.append(edit, toggle); card.append(actions);
+    const editor = document.createElement("form"); editor.className = "reward-inline-editor"; editor.hidden = true;
+    const nameLabel = document.createElement("label"); nameLabel.textContent = "Nombre";
+    const nameInput = document.createElement("input"); nameInput.required = true; nameInput.maxLength = 160; nameInput.value = reward.name; nameLabel.append(nameInput);
+    const descLabel = document.createElement("label"); descLabel.textContent = "Descripción para el cliente";
+    const descInput = document.createElement("textarea"); descInput.rows = 2; descInput.maxLength = 500; descInput.value = reward.description || ""; descLabel.append(descInput);
+    const costLabel = document.createElement("label"); costLabel.textContent = "Costo en puntos";
+    const costInput = document.createElement("input"); costInput.type = "number"; costInput.min = "1"; costInput.step = "1"; costInput.required = true; costInput.value = reward.points_cost; costLabel.append(costInput);
+    const save = document.createElement("button"); save.type = "submit"; save.textContent = "Guardar cambios";
+    editor.append(nameLabel, descLabel, costLabel, save); card.append(editor);
+    edit.addEventListener("click", () => { editor.hidden = !editor.hidden; edit.setAttribute("aria-expanded", String(!editor.hidden)); });
+    editor.addEventListener("submit", async (event) => {
+      event.preventDefault(); save.disabled = true; setMessage("reward-list-message", "Guardando…");
+      try {
+        await managerRequest(`/admin/rewards/${encodeURIComponent(reward.id)}`, { method: "PATCH", body: JSON.stringify({ name: nameInput.value.trim(), description: descInput.value.trim(), points_cost: Number(costInput.value) }) });
+        await loadRewards(); setMessage("reward-list-message", "Recompensa actualizada.");
+      } catch (error) { setMessage("reward-list-message", error.message, true); save.disabled = false; }
+    });
+    toggle.addEventListener("click", async () => {
+      toggle.disabled = true; setMessage("reward-list-message", "Guardando…");
+      try {
+        await managerRequest(`/admin/rewards/${encodeURIComponent(reward.id)}`, { method: "PATCH", body: JSON.stringify({ active: !reward.active }) });
+        await loadRewards(); setMessage("reward-list-message", reward.active ? "Recompensa pausada." : "Recompensa activada.");
+      } catch (error) { setMessage("reward-list-message", error.message, true); toggle.disabled = false; }
+    });
+    list.append(card);
+  });
+}
+
+async function loadRewards() {
+  setMessage("reward-list-message", "Cargando recompensas…");
+  try {
+    rewardsCatalog = await managerRequest("/admin/rewards");
+    renderRewards();
+    setMessage("reward-list-message", `${rewardsCatalog.length} recompensas en el catálogo.`);
+  } catch (error) { setMessage("reward-list-message", error.message, true); }
+}
+byId("load-rewards").addEventListener("click", loadRewards);
+
 byId("reward-form").addEventListener("submit", async (event) => {
   event.preventDefault(); setMessage("reward-message", "Guardando…");
   try {
-    const reward = await managerRequest("/admin/rewards", { method: "POST", body: JSON.stringify({ name: byId("reward-name").value.trim(), points_cost: Number(byId("reward-cost").value) }) });
-    setMessage("reward-message", `Reward creado: ${reward.name}.`);
+    const reward = await managerRequest("/admin/rewards", { method: "POST", body: JSON.stringify({ name: byId("reward-name").value.trim(), description: byId("reward-description").value.trim(), points_cost: Number(byId("reward-cost").value) }) });
+    setMessage("reward-message", `Recompensa creada: ${reward.name}. Ya está visible en el Club.`);
     byId("reward-form").reset();
+    await loadRewards();
   } catch (error) { setMessage("reward-message", error.message, true); }
 });
 
@@ -658,6 +740,7 @@ const actionNames = {
   "GET /admin/audiences": "Consultó audiencia",
   "GET /admin/wansoft-reconciliation": "Revisó tickets",
   "POST /admin/rewards": "Creó recompensa",
+  "PATCH /admin/rewards/{reward_id}": "Actualizó recompensa",
   "POST /admin/campaigns/by-segment": "Creó campaña",
   "POST /admin/campaigns/{campaign_id}/activate": "Activó campaña",
   "POST /admin/campaigns/{campaign_id}/send-sms": "Envió campaña SMS",

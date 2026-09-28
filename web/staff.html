@@ -13,7 +13,7 @@
       .brand-mark{display:inline-grid;place-items:center;width:44px;height:44px;flex:none;border-radius:50%;background:#e7eddd;color:#173d33}
       .brand-mark svg{display:block;width:26px;height:26px}
       .brand-wordmark strong,.brand-wordmark small{display:block}
-      .staff-workspace{max-width:800px;margin:auto}.staff-workspace>div{min-width:0}.card{padding:26px;margin-bottom:20px;border:1px solid #e3e7dc;border-radius:18px;background:#fffdf8}
+      .staff-workspace{max-width:1200px;margin:auto}.staff-workspace>div{min-width:0}.card{padding:26px;margin-bottom:20px;border:1px solid #e3e7dc;border-radius:18px;background:#fffdf8}
       input,select,textarea{max-width:100%}
       @media(max-width:720px){.staff-shell{padding:16px}}
     </style>
@@ -84,7 +84,8 @@
         </div>
 
         <div id="manager-view" class="staff-view" hidden>
-          <nav class="manager-tabs" aria-label="Herramientas de gerencia"><button type="button" class="active" data-manager-view="manager-section" data-permission="analytics" aria-pressed="true">Clientes</button><button type="button" data-manager-view="reconciliation-section" data-permission="analytics" aria-pressed="false">Tickets</button><button type="button" data-manager-view="rewards-section" data-permission="rewards" aria-pressed="false">Recompensas</button><button type="button" data-manager-view="campaigns-section" data-permission="campaigns" aria-pressed="false">Campañas</button><button type="button" data-manager-view="team-section" data-permission="owner" aria-pressed="false">Equipo</button></nav>
+          <nav class="manager-tabs" aria-label="Herramientas de gerencia"><button type="button" class="active" data-manager-view="overview-section" data-permission="overview" aria-pressed="true">Inicio</button><button type="button" data-manager-view="manager-section" data-permission="analytics" aria-pressed="false">Clientes</button><button type="button" data-manager-view="reconciliation-section" data-permission="analytics" aria-pressed="false">Tickets</button><button type="button" data-manager-view="rewards-section" data-permission="rewards" aria-pressed="false">Recompensas</button><button type="button" data-manager-view="campaigns-section" data-permission="campaigns" aria-pressed="false">Campañas</button><button type="button" data-manager-view="team-section" data-permission="owner" aria-pressed="false">Equipo</button></nav>
+          <section id="overview-section" class="card"><p class="eyebrow">CENTRO DE CONTROL</p><h2>Programa de puntos</h2><p class="muted">Todo el recorrido del Club en un lugar: clientes, tickets, recompensas, campañas y equipo.</p><div class="overview-grid"><button type="button" data-jump-manager="manager-section" data-permission="analytics"><span>01 · CLIENTES</span><strong>Conoce a tu comunidad</strong><small>Segmentos y recomendaciones →</small></button><button type="button" data-jump-manager="reconciliation-section" data-permission="analytics"><span>02 · TICKETS</span><strong>Comprueba los puntos</strong><small>Ventas y diferencias Wansoft →</small></button><button type="button" data-jump-manager="rewards-section" data-permission="rewards"><span>03 · RECOMPENSAS</span><strong>Gestiona el catálogo</strong><small><span id="overview-reward-count">Ver recompensas</span> →</small></button><button type="button" data-jump-manager="campaigns-section" data-permission="campaigns"><span>04 · CAMPAÑAS</span><strong>Vuelve a conectar</strong><small>Borradores y envíos →</small></button><button type="button" data-jump-manager="team-section" data-permission="owner"><span>05 · EQUIPO</span><strong>Controla el acceso</strong><small>Permisos y acciones →</small></button></div></section>
           <section id="manager-section" class="card">
             <p class="eyebrow">CONOCE A TUS CLIENTES</p><h2>Clientes</h2>
             <label for="segment">Segmento</label><select id="segment"><option value="new">Nuevos</option><option value="active">Activos</option><option value="loyal">Frecuentes</option><option value="at_risk">En riesgo</option></select>
@@ -112,9 +113,8 @@
             <div id="reconciliation-results" class="staff-results"></div>
           </section>
           <section id="rewards-section" class="card" hidden>
-            <p class="eyebrow">RECOMPENSAS</p><h2>Nueva recompensa</h2>
-            <form id="reward-form"><label for="reward-name">Nombre</label><input id="reward-name" required><label for="reward-cost">Costo en puntos</label><input id="reward-cost" type="number" min="1" step="1" required><button>Crear recompensa</button></form>
-            <p id="reward-message" class="message" role="status"></p>
+            <p class="eyebrow">RECOMPENSAS</p><h2>Catálogo de recompensas</h2><p class="muted">Las recompensas activas aparecen en el Club del cliente. Las pausadas se conservan aquí y pueden reactivarse.</p>
+            <div class="reward-layout"><div class="reward-catalog"><div class="reward-list-heading"><h3>Recompensas creadas</h3><button id="load-rewards" type="button" class="secondary">Actualizar lista</button></div><p id="reward-list-message" class="message" role="status"></p><div id="reward-list" class="reward-list"></div></div><div class="reward-editor"><h3>Nueva recompensa</h3><form id="reward-form"><label for="reward-name">Nombre</label><input id="reward-name" required maxlength="160"><label for="reward-description">Descripción para el cliente</label><textarea id="reward-description" rows="3" maxlength="500"></textarea><label for="reward-cost">Costo en puntos</label><input id="reward-cost" type="number" min="1" step="1" required><button>Crear recompensa</button></form><p id="reward-message" class="message" role="status"></p></div></div>
           </section>
           <section id="campaigns-section" class="card" hidden>
             <p class="eyebrow">COMUNICACIÓN</p><h2>Campaña por segmento</h2>
