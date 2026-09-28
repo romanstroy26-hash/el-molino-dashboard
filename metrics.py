@@ -654,6 +654,154 @@ def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
     return salida
 
 
+def top_platillos_panaderia(engine: Engine, sucursal: str | None = None,
+                             desde: str | None = None, hasta: str | None = None,
+                             n: int = 10) -> list[dict]:
+    """Top posiciones de Panadería por UNIDADES (no por dinero -- para
+    planear producción/personal importa cuántas piezas hay que hacer, no
+    cuánto dejan en pesos) dentro del rango pedido. Misma idea que
+    top_platillos_bebidas, pero una sola categoría -- responde "¿QUÉ se
+    produce?", que ni la serie por día ni el patrón por hora contestan:
+    dos posiciones pueden pesar lo mismo en piezas y necesitar personal muy
+    distinto (una bandeja de bolillo vs. un pastel decorado a mano)."""
+    # Agregado en el SQL (GROUP BY platillo), no fila por fila en Python --
+    # mismo motivo que panaderia_real_y_pronostico: cientos de miles de
+    # líneas de Panadería, traerlas todas es ~30s de tráfico contra la
+    # nube por nada (aquí solo hacen falta los totales por posición).
+    sql = ("SELECT platillo, SUM(importe) AS ventas, SUM(cantidad) AS unidades "
+           "FROM sales_lines WHERE tipo_grupo = 'PANADERIA'")
+    params: dict = {}
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    if desde:
+        sql += " AND fecha >= :desde"
+        params["desde"] = desde
+    if hasta:
+        sql += " AND fecha <= :hasta"
+        params["hasta"] = hasta
+    sql += " GROUP BY platillo"
+
+    con_datos: list[dict] = []
+    total_unidades = 0.0
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            clave = row["platillo"] or "(без названия)"
+            con_datos.append({"platillo": clave, "ventas": row["ventas"], "unidades": row["unidades"]})
+            total_unidades += row["unidades"]
+
+    filas = [
+        {"platillo": r["platillo"], "unidades": round(r["unidades"], 2),
+         "ventas": round(r["ventas"], 2),
+         "pct_unidades": round(100 * r["unidades"] / total_unidades, 1) if total_unidades else 0.0}
+        for r in con_datos
+    ]
+    filas.sort(key=lambda r: r["unidades"], reverse=True)
+    return filas[:n]
+
+
+def patron_horario_panaderia(engine: Engine, sucursal: str | None = None,
+                              desde: str | None = None, hasta: str | None = None) -> list[dict]:
+    """A QUÉ HORA se venden las unidades de Panadería, sumado sobre TODO el
+    rango pedido (mismo método que patron_horario_bebidas, una sola
+    categoría) -- la pregunta clave para personal: no cuánto se vende en
+    total, sino en qué horas hace falta gente detrás del mostrador
+    reponiendo/atendiendo. Requiere hora_cierre -- igual que
+    patron_horario_bebidas, filas viejas sin hora quedan fuera."""
+    # SUBSTR(hora_cierre, 12, 2) saca las dos letras "HH" de un ISO
+    # 'YYYY-MM-DDTHH:MM:SS[.ffffff]' -- función portable entre SQLite y
+    # Postgres, así el agregado por hora corre en el servidor (GROUP BY)
+    # en vez de traer cientos de miles de líneas de Panadería fila por
+    # fila (mismo problema de red que panaderia_real_y_pronostico)."""
+    sql = ("SELECT SUBSTR(hora_cierre, 12, 2) AS hora_str, "
+           "SUM(importe) AS ventas, SUM(cantidad) AS unidades "
+           "FROM sales_lines "
+           "WHERE tipo_grupo = 'PANADERIA' AND hora_cierre IS NOT NULL "
+           "AND hora_cierre != ''")
+    params: dict = {}
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    if desde:
+        sql += " AND fecha >= :desde"
+        params["desde"] = desde
+    if hasta:
+        sql += " AND fecha <= :hasta"
+        params["hasta"] = hasta
+    sql += " GROUP BY SUBSTR(hora_cierre, 12, 2)"
+
+    ventas = defaultdict(float)
+    unidades = defaultdict(float)
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            try:
+                hora = int(row["hora_str"])
+            except (ValueError, TypeError):
+                continue
+            ventas[hora] += row["ventas"]
+            unidades[hora] += row["unidades"]
+
+    return [
+        {
+            "hora": h,
+            "ventas": round(ventas.get(h, 0.0), 2),
+            "unidades": round(unidades.get(h, 0.0), 2),
+        }
+        for h in range(24)
+    ]
+
+
+def analizar_desviacion_produccion(dias: list[dict], campo: str) -> dict | None:
+    """Explica la brecha entre "real_unidades" (ventas ya cerradas) y
+    dias[i][campo] -- "pronostico_unidades" o "unidades_plan" -- para la
+    página "Планирование": la pregunta que ni el gráfico ni la tabla
+    contestan solas es "¿por qué el plan/pronóstico quedó tan por debajo
+    (o por arriba) de lo real?".
+
+    Dos causas posibles, distinguibles con aritmética simple (nada de IA
+    inventando explicaciones de negocio que no están en los datos):
+      - TENDENCIA sostenida -- si la segunda mitad del rango vendió, en
+        promedio, bastante más que la primera, el pronóstico (que pesa
+        semanas recientes pero sigue mirando hacia atrás) se está
+        quedando corto porque el negocio crece más rápido de lo que el
+        peso por recencia alcanza a seguir -- no es un solo día raro, es
+        el rango entero corriéndose para arriba.
+      - DÍA PUNTUAL -- si la tendencia es chica pero hay un día con una
+        diferencia mucho mayor que el resto, ese día concreto es el que
+        arrastra el promedio (un evento, un fin de semana largo, etc.),
+        no un problema del método en general.
+
+    Solo compara días donde AMBOS valores existen (días ya cerrados con
+    pronóstico/plan calculado) -- días futuros no tienen "real" con qué
+    comparar todavía. Devuelve None si hay menos de 2 días comparables."""
+    con_ambos = [d for d in dias if d.get("real_unidades") is not None and d.get(campo) is not None]
+    if len(con_ambos) < 2:
+        return None
+
+    total_real = sum(d["real_unidades"] for d in con_ambos)
+    total_comparado = sum(d[campo] for d in con_ambos)
+    desviacion_pct = round(100 * (total_real - total_comparado) / total_comparado, 1) if total_comparado else 0.0
+
+    mitad = len(con_ambos) // 2
+    primera, segunda = con_ambos[:mitad] or con_ambos, con_ambos[mitad:] or con_ambos
+    real_prom_1 = sum(d["real_unidades"] for d in primera) / len(primera)
+    real_prom_2 = sum(d["real_unidades"] for d in segunda) / len(segunda)
+    tendencia_pct = round(100 * (real_prom_2 - real_prom_1) / real_prom_1, 1) if real_prom_1 else 0.0
+
+    peor = max(con_ambos, key=lambda d: d["real_unidades"] - d[campo])
+
+    return {
+        "n_dias": len(con_ambos),
+        "total_real": round(total_real, 0),
+        "total_comparado": round(total_comparado, 0),
+        "desviacion_pct": desviacion_pct,
+        "tendencia_pct": tendencia_pct,
+        "peor_dia": peor["fecha"],
+        "peor_dia_real": round(peor["real_unidades"], 0),
+        "peor_dia_comparado": round(peor[campo], 0),
+    }
+
+
 def ventas_por_hora(engine: Engine, fecha: str, sucursal: str | None = None) -> dict:
     """Продажи по часам одного конкретного дня (в деньгах И в штуках) против
     ПРОГНОЗА для того же дня недели -- построен из ВСЕЙ доступной истории

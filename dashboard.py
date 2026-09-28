@@ -209,6 +209,16 @@ def _cache_panaderia_real_y_pronostico(_engine, desde, hasta, sucursal):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_top_platillos_panaderia(_engine, sucursal, desde, hasta, n):
+    return metrics.top_platillos_panaderia(_engine, sucursal=sucursal, desde=desde, hasta=hasta, n=n)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_patron_horario_panaderia(_engine, sucursal, desde, hasta):
+    return metrics.patron_horario_panaderia(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_cafe_por_sucursal(_engine, desde, hasta):
     return metrics.cafe_por_sucursal(_engine, desde=desde, hasta=hasta)
 
@@ -1484,6 +1494,119 @@ def page_planificacion():
         st.cache_data.clear()
         st.success("План сохранён.")
         st.rerun()
+
+    # ---- Разбивка по позициям ---------------------------------------------
+    # Штуки, не выручка -- для персонала важно, сколько ШТУК нужно
+    # сделать, а не сколько это стоит: конка и круассан с начинкой весят
+    # разное время на изготовление даже при одинаковой выручке.
+    st.subheader("Разбивка по позициям (топ-10 по штукам)")
+    top_items = _cache_top_platillos_panaderia(
+        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(), 10,
+    )
+    df_top = pd.DataFrame(top_items)
+    if df_top.empty:
+        st.info("За этот диапазон дат нет данных по Panadería.")
+    else:
+        grafico_top = alt.Chart(df_top).mark_bar().encode(
+            x=alt.X("unidades:Q", title="Штук"),
+            y=alt.Y("platillo:N", title=None, sort="-x"),
+            color=alt.value(COLOR_PRIMARIO),
+            tooltip=[
+                alt.Tooltip("platillo:N", title="Позиция"),
+                alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+                alt.Tooltip("pct_unidades:Q", title="Доля от штук Panadería, %", format=".1f"),
+                alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+            ],
+        ).properties(height=32 * len(df_top) + 40)
+        st.altair_chart(grafico_top, width="stretch")
+        st.caption(
+            "Топ-10 позиций Panadería по штукам за выбранный диапазон дат и "
+            "точку. Разные позиции требуют разного времени на "
+            "изготовление -- это тоже влияет на нужное количество людей, "
+            "не только общая сумма штук."
+        )
+
+    # ---- Штуки по часам -----------------------------------------------------
+    st.subheader("Продажи по часам")
+    patron_horas = _cache_patron_horario_panaderia(
+        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+    )
+    df_horas = pd.DataFrame(patron_horas)
+    df_horas = df_horas[df_horas["unidades"] > 0]
+    if df_horas.empty:
+        st.info(
+            "Для этого диапазона нет строк с временем чека (hora_cierre) -- "
+            "почасовой разбор недоступен."
+        )
+    else:
+        grafico_horas = alt.Chart(df_horas).mark_bar().encode(
+            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("unidades:Q", title="Штук"),
+            color=alt.value(COLOR_SECUNDARIO),
+            tooltip=[
+                alt.Tooltip("hora:O", title="Час"),
+                alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+                alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+            ],
+        ).properties(height=280)
+        st.altair_chart(grafico_horas, width="stretch")
+        st.caption(
+            "Сумма штук Panadería по часу закрытия чека за ВЕСЬ выбранный "
+            "диапазон дат (не один день) -- показывает, в какие часы "
+            "нужно больше людей на кассе/выкладке, отдельно от того, "
+            "сколько продаётся за день целиком."
+        )
+
+    # ---- Почему прогноз расходится с фактом ----------------------------------
+    # Арифметика, не рассказ про причины бизнеса (см. docstring
+    # analizar_desviacion_produccion) -- тренд (все дни сместились
+    # одинаково) отличим от единичного дня (один день тянет среднее).
+    st.subheader("Почему прогноз расходится с фактом")
+    dias_para_analisis = df.astype(object).where(df.notna(), None).to_dict("records")
+    analisis = metrics.analizar_desviacion_produccion(dias_para_analisis, "pronostico_unidades")
+    if analisis is None:
+        st.info("Пока недостаточно закрытых дней с прогнозом, чтобы сравнить.")
+    else:
+        direccion = "выше" if analisis["desviacion_pct"] > 0 else "ниже"
+        st.write(
+            f"За {analisis['n_dias']} закрытых дней реальные продажи "
+            f"({analisis['total_real']:,.0f} шт) оказались на "
+            f"{abs(analisis['desviacion_pct']):.1f}% {direccion} прогноза "
+            f"({analisis['total_comparado']:,.0f} шт)."
+        )
+        if abs(analisis["tendencia_pct"]) >= 10:
+            rost_padenie = "выросли" if analisis["tendencia_pct"] > 0 else "упали"
+            st.write(
+                f"Основная причина -- тренд: во второй половине диапазона "
+                f"продажи {rost_padenie} в среднем на "
+                f"{abs(analisis['tendencia_pct']):.1f}% по сравнению с "
+                f"первой половиной. Прогноз строится по недавним неделям, "
+                f"но смотрит назад -- при таком темпе он систематически "
+                f"отстаёт (или опережает)."
+            )
+        else:
+            st.write(
+                f"Тренд по диапазону небольшой -- расхождение не общее, а "
+                f"сконцентрировано в отдельных днях. Сильнее всего "
+                f"разошлось {analisis['peor_dia']}: факт "
+                f"{analisis['peor_dia_real']:,.0f} шт против прогноза "
+                f"{analisis['peor_dia_comparado']:,.0f} шт."
+            )
+
+        analisis_plan = metrics.analizar_desviacion_produccion(dias_para_analisis, "unidades_plan")
+        if analisis_plan is not None:
+            direccion_plan = "выше" if analisis_plan["desviacion_pct"] > 0 else "ниже"
+            st.write(
+                f"Относительно ВРУЧНУЮ введённого плана: факт на "
+                f"{abs(analisis_plan['desviacion_pct']):.1f}% {direccion_plan} "
+                f"плана ({analisis_plan['total_comparado']:,.0f} шт)."
+            )
+
+        st.caption(
+            "Это разбор тех же цифр, что и на графике выше -- статистика "
+            "(тренд/единичный день), а не объяснение бизнес-причин "
+            "(праздник, акция и т.п. в данных не видно)."
+        )
 
 
 # =============================================================================
