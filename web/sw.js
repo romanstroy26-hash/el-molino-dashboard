@@ -1,5 +1,5 @@
-const CACHE = "el-molino-club-v14";
-const ASSETS = ["/", "/styles.css", "/app.js", "/manifest.webmanifest"];
+const CACHE = "el-molino-club-v15";
+const ASSETS = ["/", "/styles.css", "/theme.css", "/app.js", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
