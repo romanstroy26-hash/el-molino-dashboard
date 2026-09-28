@@ -1486,10 +1486,24 @@ def page_planificacion():
     )
     df_carga_top = pd.DataFrame(carga_horas_top)
     df_carga_top = df_carga_top[df_carga_top["unidades"] > 0]
+
+    # "Текущая" -- ЗА СЕГОДНЯ, за час, который идёт прямо сейчас (может
+    # быть неполным -- час ещё не закрылся). "Идеальная" -- среднее по
+    # всем рабочим часам за выбранный период: ориентир "обычной" нагрузки,
+    # чтобы было с чем сравнить и пиковую, и текущую цифры, а не просто
+    # смотреть на голое число без контекста.
+    hora_actual = tiempo.ahora().hour
+    carga_hoy = _cache_carga_por_hora_panaderia(
+        engine, sucursal_filtro, hoy.isoformat(), hoy.isoformat(),
+    )
+    fila_actual = next((h for h in carga_hoy if h["hora"] == hora_actual), None)
+    ideal = df_carga_top["unidades_por_persona"].mean() if not df_carga_top.empty else None
+
+    col_pico, col_actual, col_ideal = st.columns(3)
     if not df_carga_top.empty:
         fila_pico = df_carga_top.loc[df_carga_top["unidades_por_persona"].idxmax()]
-        st.metric(
-            "🏭 Пиковая загрузка производства, шт/чел-час",
+        col_pico.metric(
+            "🏭 Пиковая загрузка, шт/чел-час",
             f"{fila_pico['unidades_por_persona']:.1f}",
             help=(
                 f"Самый нагруженный час за выбранный период -- "
@@ -1497,6 +1511,29 @@ def page_planificacion():
                 f"Panadería, поделено на персонал этого дня недели). "
                 f"Подробный разбор по всем часам -- ниже, в разделе "
                 f"«Штук на человека в час»."
+            ),
+        )
+    if fila_actual is not None and fila_actual["unidades"] > 0:
+        col_actual.metric(
+            "⚡ Текущая загрузка, шт/чел-час",
+            f"{fila_actual['unidades_por_persona']:.1f}",
+            help=(
+                f"Штук Panadería за {hora_actual:02d}:00 сегодня, поделено на "
+                f"персонал сегодняшнего дня недели -- час ещё может быть не "
+                f"закрыт, цифра может вырасти."
+            ),
+        )
+    else:
+        col_actual.metric("⚡ Текущая загрузка, шт/чел-час", "—",
+                           help="За текущий час пока нет продаж Panadería.")
+    if ideal is not None:
+        col_ideal.metric(
+            "🎯 Идеальная загрузка, шт/чел-час",
+            f"{ideal:.1f}",
+            help=(
+                "Среднее по всем рабочим часам за выбранный период -- "
+                "ориентир 'обычной' нагрузки (не пиковой), чтобы было с чем "
+                "сравнить текущую и пиковую цифры слева."
             ),
         )
 
@@ -1594,35 +1631,42 @@ def page_planificacion():
 
     # ---- План-задание на день -- скачать -----------------------------------
     st.subheader("План-задание на день -- скачать")
-    st.caption(
-        "Готовое задание на смену: сколько штук печь всего, по часам и по "
-        "позициям меню -- каждое число округлено ВВЕРХ до кратного "
-        "6 (партия/лоток выпечки, а не поштучно -- лучше немного лишнего, "
-        "чем недопечь целый лоток). Разбивка по часам и позициям -- из "
-        "фактического распределения за 90 дней ДО выбранной даты; итог за "
-        "день -- из ручного плана (см. таблицу выше), а если его нет -- "
-        "из прогноза."
-    )
-    fecha_tarea = st.date_input(
-        "Дата плана-задания", value=hoy + dt.timedelta(days=1),
-        min_value=fecha_min, key="plan_tarea_fecha",
-    )
-    tarea = _cache_plan_tarea_dia(engine, fecha_tarea.isoformat(), sucursal_filtro, 10, 6)
-    if tarea["total_dia"] is None:
-        st.info("Для этой даты нет ни плана, ни прогноза -- задание составить не из чего.")
+    if sucursal_filtro is None:
+        st.info(
+            "Выбери конкретную точку в фильтрах слева -- план-задание "
+            "составляется для ОДНОЙ точки (там своя кухня и своё "
+            "производство), а не для «Все точки» сразу."
+        )
     else:
-        st.write(
-            f"Итого на {fecha_tarea.isoformat()}: **{tarea['total_dia_redondeado']} шт** "
-            f"(кратно 6; источник -- {tarea['fuente_total']}; до округления -- "
-            f"{tarea['total_dia']:.0f} шт)."
+        st.caption(
+            "Готовое задание на смену: сколько штук печь всего, по часам и "
+            "по позициям меню -- каждое число округлено ВВЕРХ до кратного "
+            "6 (партия/лоток выпечки, а не поштучно -- лучше немного "
+            "лишнего, чем недопечь целый лоток). Разбивка по часам и "
+            "позициям -- из фактического распределения за 90 дней ДО "
+            "выбранной даты; итог за день -- из ручного плана (см. таблицу "
+            "выше), а если его нет -- из прогноза."
         )
-        excel_bytes = _excel_plan_tarea(tarea, opcion_sucursal)
-        st.download_button(
-            "⬇️ Скачать план-задание (.xlsx)",
-            data=excel_bytes,
-            file_name=f"plan_tarea_{fecha_tarea.isoformat()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        fecha_tarea = st.date_input(
+            "На какое число план-задание", value=hoy + dt.timedelta(days=1),
+            min_value=fecha_min, key="plan_tarea_fecha",
         )
+        tarea = _cache_plan_tarea_dia(engine, fecha_tarea.isoformat(), sucursal_filtro, 10, 6)
+        if tarea["total_dia"] is None:
+            st.info("Для этой даты нет ни плана, ни прогноза -- задание составить не из чего.")
+        else:
+            st.write(
+                f"Итого на {fecha_tarea.isoformat()}: **{tarea['total_dia_redondeado']} шт** "
+                f"(кратно 6; источник -- {tarea['fuente_total']}; до округления -- "
+                f"{tarea['total_dia']:.0f} шт)."
+            )
+            excel_bytes = _excel_plan_tarea(tarea, opcion_sucursal)
+            st.download_button(
+                "⬇️ Скачать план-задание (.xlsx)",
+                data=excel_bytes,
+                file_name=f"plan_tarea_{opcion_sucursal}_{fecha_tarea.isoformat()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     # ---- Разбивка по позициям ---------------------------------------------
     # Штуки, не выручка -- для персонала важно, сколько ШТУК нужно
