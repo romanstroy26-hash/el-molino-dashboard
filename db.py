@@ -206,9 +206,13 @@ def insert_lines(engine: Engine, rows: Iterable[dict]) -> dict:
         чеков при этом оставалось верным -- оно считается по уникальным
         номерам -- так что в глаза это не бросалось: выглядело как
         "средний чек вырос вдвое").
-      - Номер чека (movimiento_pdv) сквозной и не повторяется ни между
-        точками, ни между днями -- проверено на всей базе. Поэтому "этот
-        чек уже есть" -- надёжный признак, а "этот файл уже грузили" -- нет.
+      - Номер чека (movimiento_pdv) сквозной и не повторяется ВНУТРИ одной
+        точки. МЕЖДУ точками он повторяется -- это выяснилось на реальных
+        данных (загрузка Concha & Cafe стёрла старые чеки El Molino Ruso
+        с такими же номерами, потому что старое удаление шло только по
+        номеру чека, без учёта точки). Поэтому "этот чек уже есть" --
+        надёжный признак ТОЛЬКО вместе с sucursal, а "этот файл уже
+        грузили" -- нет.
       - Порядок загрузки перестаёт иметь значение. Если один файл содержит
         день целиком, а другой -- только его начало (выгрузка сделана
         днём, магазин ещё торговал), то загрузка частичного файла ПОСЛЕ
@@ -226,28 +230,39 @@ def insert_lines(engine: Engine, rows: Iterable[dict]) -> dict:
     if not rows:
         return {"lineas": 0, "tickets": 0, "tickets_ya_estaban": 0, "lineas_reemplazadas": 0}
 
-    tickets = sorted({r["movimiento_pdv"] for r in rows if r["movimiento_pdv"] is not None})
-    archivos = sorted({r["archivo_origen"] for r in rows})
+    # Тикеты группируются по ТОЧКЕ -- см. правку выше: номер чека
+    # повторяется между точками, поэтому удаление "по всем точкам сразу"
+    # затирало чужие чеки с тем же номером.
+    tickets_por_sucursal: dict[str, list] = {}
+    for r in rows:
+        if r["movimiento_pdv"] is not None:
+            tickets_por_sucursal.setdefault(r["sucursal"], set()).add(r["movimiento_pdv"])
+    tickets_por_sucursal = {suc: sorted(t) for suc, t in tickets_por_sucursal.items()}
+    total_tickets = sum(len(t) for t in tickets_por_sucursal.values())
+    archivos = sorted({(r["archivo_origen"], r["sucursal"]) for r in rows})
 
     tickets_ya_estaban = 0
     lineas_reemplazadas = 0
 
     with engine.begin() as conn:
-        for lote in _chunked(tickets, _TAMANO_LOTE_CLAVES):
-            condicion = sales_lines.c.movimiento_pdv.in_(lote)
-            tickets_ya_estaban += conn.execute(
-                select(func.count(func.distinct(sales_lines.c.movimiento_pdv))).where(condicion)
-            ).scalar_one()
-            lineas_reemplazadas += conn.execute(delete(sales_lines).where(condicion)).rowcount or 0
+        for suc, tickets_suc in tickets_por_sucursal.items():
+            for lote in _chunked(tickets_suc, _TAMANO_LOTE_CLAVES):
+                condicion = (sales_lines.c.sucursal == suc) & sales_lines.c.movimiento_pdv.in_(lote)
+                tickets_ya_estaban += conn.execute(
+                    select(func.count(func.distinct(sales_lines.c.movimiento_pdv))).where(condicion)
+                ).scalar_one()
+                lineas_reemplazadas += conn.execute(delete(sales_lines).where(condicion)).rowcount or 0
 
         # Подстраховка для строк БЕЗ номера чека (в текущих выгрузках таких
         # нет, но пустая ячейка в отчёте -- дело возможное): их по чеку не
         # опознать, поэтому для них признаком остаётся файл -- иначе
         # повторная загрузка того же файла упёрлась бы в UNIQUE(archivo,
-        # fila).
-        for archivo in archivos:
+        # fila). Тоже со scope по точке -- та же причина, что и выше.
+        for archivo, suc in archivos:
             lineas_reemplazadas += conn.execute(
-                delete(sales_lines).where(sales_lines.c.archivo_origen == archivo)
+                delete(sales_lines).where(
+                    (sales_lines.c.archivo_origen == archivo) & (sales_lines.c.sucursal == suc)
+                )
             ).rowcount or 0
 
         for lote in _chunked(rows, _TAMANO_LOTE_FILAS):
@@ -255,7 +270,7 @@ def insert_lines(engine: Engine, rows: Iterable[dict]) -> dict:
 
     return {
         "lineas": len(rows),
-        "tickets": len(tickets),
+        "tickets": total_tickets,
         "tickets_ya_estaban": tickets_ya_estaban,
         "lineas_reemplazadas": lineas_reemplazadas,
     }

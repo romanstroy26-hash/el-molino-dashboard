@@ -770,6 +770,52 @@ def patron_horario_panaderia(engine: Engine, sucursal: str | None = None,
     ]
 
 
+# Personal fijo por turno -- todavía no hay horario de turnos en la base
+# (ni fuente externa para eso), así que se usa directamente el número que
+# dio Roman en la conversación: 5 personas entre semana y sábado, 6 los
+# domingos, igual en TODAS las horas del día (el personal no varía por
+# hora en este modelo, solo por día de la semana). Si el personal real
+# cambia, o empieza a variar por punto/hora, esta es la constante a
+# tocar -- por ahora es la ÚNICA fuente de este dato.
+PERSONAL_ENTRE_SEMANA = 5
+PERSONAL_DOMINGO = 6
+
+
+def personal_del_dia(fecha: dt.date) -> int:
+    return PERSONAL_DOMINGO if fecha.weekday() == 6 else PERSONAL_ENTRE_SEMANA
+
+
+def carga_por_hora_panaderia(engine: Engine, sucursal: str | None = None,
+                              desde: str | None = None, hasta: str | None = None) -> list[dict]:
+    """patron_horario_panaderia (unidades por hora, sumadas en TODO el
+    rango) dividido entre el personal disponible -- responde la pregunta
+    real detrás de "¿cuántas unidades por hora?": ¿esa carga es mucha o
+    poca PARA LA GENTE QUE HAY?
+
+    El personal es constante durante todo el día (ver personal_del_dia) --
+    por eso el total de persona-horas disponibles para cualquier hora del
+    día, sumado en todo el rango, es EL MISMO número (la suma del
+    personal de cada día del rango): a las 8am hay tantas personas
+    trabajando como a las 8pm. Así, unidades_por_persona de la hora H =
+    unidades de esa hora (sumadas en el rango) / ese mismo total -- sin
+    necesitar saber turnos por hora, que no existen en la base."""
+    horas = patron_horario_panaderia(engine, sucursal=sucursal, desde=desde, hasta=hasta)
+
+    personal_dias_total = 0
+    if desde and hasta:
+        d = dt.date.fromisoformat(desde)
+        fin = dt.date.fromisoformat(hasta)
+        while d <= fin:
+            personal_dias_total += personal_del_dia(d)
+            d += dt.timedelta(days=1)
+
+    for h in horas:
+        h["unidades_por_persona"] = (
+            round(h["unidades"] / personal_dias_total, 2) if personal_dias_total else 0.0
+        )
+    return horas
+
+
 def analizar_desviacion_produccion(dias: list[dict], campo: str) -> dict | None:
     """Explica la brecha entre "real_unidades" (ventas ya cerradas) y
     dias[i][campo] -- "pronostico_unidades" o "unidades_plan" -- para la

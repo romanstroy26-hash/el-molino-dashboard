@@ -219,6 +219,11 @@ def _cache_patron_horario_panaderia(_engine, sucursal, desde, hasta):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_carga_por_hora_panaderia(_engine, sucursal, desde, hasta):
+    return metrics.carga_por_hora_panaderia(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_cafe_por_sucursal(_engine, desde, hasta):
     return metrics.cafe_por_sucursal(_engine, desde=desde, hasta=hasta)
 
@@ -1565,6 +1570,49 @@ def page_planificacion():
             "диапазон дат (не один день) -- показывает, в какие часы "
             "нужно больше людей на кассе/выкладке, отдельно от того, "
             "сколько продаётся за день целиком."
+        )
+
+    # ---- Штук на человека в час (загрузка производства) --------------------
+    st.subheader("Штук на человека в час")
+    carga_horas = _cache_carga_por_hora_panaderia(
+        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+    )
+    df_carga = pd.DataFrame(carga_horas)
+    df_carga = df_carga[df_carga["unidades"] > 0]
+    if df_carga.empty:
+        st.info("Для этого диапазона нет данных, чтобы посчитать нагрузку на человека.")
+    else:
+        grafico_carga = alt.Chart(df_carga).mark_bar().encode(
+            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("unidades_por_persona:Q", title="Штук на человека"),
+            color=alt.value(COLOR_PRIMARIO),
+            tooltip=[
+                alt.Tooltip("hora:O", title="Час"),
+                alt.Tooltip("unidades_por_persona:Q", title="Штук на человека", format=".1f"),
+                alt.Tooltip("unidades:Q", title="Всего штук в этот час", format=",.0f"),
+            ],
+        ).properties(height=280)
+        st.altair_chart(grafico_carga, width="stretch")
+
+        dias_norm = dias_dom = 0
+        d = desde
+        while d <= hasta:
+            if d.weekday() == 6:
+                dias_dom += 1
+            else:
+                dias_norm += 1
+            d += dt.timedelta(days=1)
+        personal_total = dias_norm * metrics.PERSONAL_ENTRE_SEMANA + dias_dom * metrics.PERSONAL_DOMINGO
+        st.caption(
+            f"Персонал считается фиксированным (пока нет графика смен в "
+            f"базе): {metrics.PERSONAL_ENTRE_SEMANA} чел. в будни и "
+            f"субботу, {metrics.PERSONAL_DOMINGO} чел. по воскресеньям, "
+            f"одинаково на все часы дня. За выбранный период это "
+            f"{dias_norm} будне-субботних + {dias_dom} воскресных дней = "
+            f"{personal_total} человеко-дней. Столбик -- сколько штук в "
+            f"среднем пришлось на одного человека в этот час за весь "
+            f"период. Если реальная численность изменится -- поправь "
+            f"PERSONAL_ENTRE_SEMANA / PERSONAL_DOMINGO в metrics.py."
         )
 
     # ---- Почему прогноз расходится с фактом ----------------------------------
