@@ -1396,12 +1396,22 @@ def page_planificacion():
     )
     sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
 
+    # Диапазон дат этой ТОЧКИ, не всей базы -- у новых точек (например,
+    # Concha & Cafe) история короче, и без min_value можно выбрать дни, для
+    # которых у этой точки заведомо нет продаж (не баг -- точка тогда
+    # ещё не работала или не продавала Panadería), но выглядит как дырка
+    # в данных, если не подписано явно.
+    rango = _cache_rango_fechas(engine, sucursal_filtro)
+    fecha_min = dt.date.fromisoformat(rango[0])
+    fecha_max = dt.date.fromisoformat(rango[1])
     hoy = tiempo.hoy()
     desde, hasta = st.sidebar.date_input(
         "Диапазон дат",
-        value=(hoy - dt.timedelta(days=13), hoy + dt.timedelta(days=13)),
+        value=(max(fecha_min, hoy - dt.timedelta(days=13)), hoy + dt.timedelta(days=13)),
+        min_value=fecha_min,
         key="plan_rango",
     )
+    st.sidebar.caption(f"Данные для этой точки есть с {fecha_min} по {fecha_max}")
 
     datos = _cache_panaderia_real_y_pronostico(
         engine, desde.isoformat(), hasta.isoformat(), sucursal_filtro,
