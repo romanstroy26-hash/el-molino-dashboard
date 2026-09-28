@@ -318,6 +318,37 @@ def list_active_rewards(engine: Engine) -> list[dict]:
         return [dict(row) for row in rows]
 
 
+def list_admin_rewards(engine: Engine) -> list[dict]:
+    """Show the entire catalog, including hidden rewards, to authorized staff."""
+    with engine.connect() as conn:
+        rows = conn.execute(select(rewards).order_by(rewards.c.created_at.desc())).mappings()
+        return [dict(row) for row in rows]
+
+
+def update_reward(engine: Engine, reward_id: str, changes: dict) -> dict:
+    """Update catalog availability without removing historical redemptions."""
+    allowed = {"name", "description", "points_cost", "active"}
+    if not changes or set(changes) - allowed:
+        raise CustomerError("No hay cambios válidos para la recompensa")
+    if "name" in changes:
+        changes["name"] = (changes["name"] or "").strip()
+        if not changes["name"]:
+            raise CustomerError("El nombre de la recompensa es obligatorio")
+    if "description" in changes:
+        changes["description"] = _normalize_optional(changes["description"])
+    if "points_cost" in changes and (changes["points_cost"] is None or changes["points_cost"] <= 0):
+        raise CustomerError("El costo debe ser mayor que cero")
+    if "active" in changes and changes["active"] is None:
+        raise CustomerError("El estado de la recompensa es obligatorio")
+    changes["updated_at"] = _now()
+    with engine.begin() as conn:
+        row = conn.execute(select(rewards.c.id).where(rewards.c.id == reward_id)).first()
+        if row is None:
+            raise CustomerNotFound(reward_id)
+        conn.execute(update(rewards).where(rewards.c.id == reward_id).values(**changes))
+        return dict(conn.execute(select(rewards).where(rewards.c.id == reward_id)).mappings().one())
+
+
 def create_reward(
     engine: Engine, name: str, points_cost: int, description: str | None = None,
 ) -> dict:

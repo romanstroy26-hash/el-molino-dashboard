@@ -42,6 +42,8 @@ from customer_service import (
     find_customer_by_phone,
     get_points_balance,
     list_active_rewards,
+    list_admin_rewards,
+    update_reward,
     list_customer_campaigns,
     get_customer_insights,
     list_customer_insights,
@@ -196,6 +198,13 @@ class RewardCreate(RequestModel):
     name: str = Field(min_length=1, max_length=160)
     description: str | None = None
     points_cost: int = Field(gt=0)
+
+
+class RewardUpdate(RequestModel):
+    name: str | None = Field(default=None, max_length=160)
+    description: str | None = None
+    points_cost: int | None = Field(default=None, gt=0)
+    active: bool | None = None
 
 
 class CampaignCreate(RequestModel):
@@ -844,10 +853,21 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
         except CustomerError as error:
             raise _error_to_http(error) from error
 
+    @app.get("/admin/rewards", response_model=list[RewardOut])
+    def read_admin_rewards(_: None = Depends(require_rewards)) -> list[dict]:
+        return list_admin_rewards(app.state.engine)
+
     @app.post("/admin/rewards", response_model=RewardOut, status_code=status.HTTP_201_CREATED)
     def add_reward(payload: RewardCreate, _: None = Depends(require_rewards)) -> dict:
         try:
             return create_reward(app.state.engine, **payload.model_dump())
+        except CustomerError as error:
+            raise _error_to_http(error) from error
+
+    @app.patch("/admin/rewards/{reward_id}", response_model=RewardOut)
+    def edit_reward(reward_id: str, payload: RewardUpdate, _: None = Depends(require_rewards)) -> dict:
+        try:
+            return update_reward(app.state.engine, reward_id, payload.model_dump(exclude_unset=True))
         except CustomerError as error:
             raise _error_to_http(error) from error
 
