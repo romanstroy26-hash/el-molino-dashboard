@@ -82,6 +82,67 @@ GRANULARIDADES = {
     "mes": _periodo_mes,
 }
 
+# Festivos/fechas comerciales de México con peso conocido en panadería y
+# cafetería -- NO es la lista completa de días oficiales (un día que no
+# mueve la venta de pan no aporta nada al análisis de desviaciones). Con
+# fecha FIJA cada año -- (mes, día): nombre.
+FESTIVOS_MEXICO_FIJOS: dict[tuple[int, int], str] = {
+    (1, 1): "Año Nuevo",
+    (1, 6): "Día de Reyes",
+    (2, 2): "Día de la Candelaria",
+    (2, 14): "Día del Amor y la Amistad",
+    (3, 21): "Natalicio de Benito Juárez",
+    (4, 30): "Día del Niño",
+    (5, 1): "Día del Trabajo",
+    (5, 10): "Día de las Madres",
+    (9, 16): "Día de la Independencia",
+    (11, 1): "Día de Todos los Santos",
+    (11, 2): "Día de Muertos",
+    (11, 20): "Día de la Revolución",
+    (12, 12): "Día de la Virgen de Guadalupe",
+    (12, 24): "Nochebuena",
+    (12, 25): "Navidad",
+    (12, 31): "Fin de Año",
+}
+
+# Semana Santa -- fecha MÓVIL (depende de la Pascua), no se puede expresar
+# como (mes, día) fijo. Cargado a mano por año -- si la base llega a
+# cubrir un año que no está aquí, agregarlo (fechas de Jueves/Viernes
+# Santo, fáciles de confirmar en cualquier calendario).
+FESTIVOS_MEXICO_MOVILES: dict[str, str] = {
+    "2025-04-17": "Jueves Santo",
+    "2025-04-18": "Viernes Santo",
+    "2026-04-02": "Jueves Santo",
+    "2026-04-03": "Viernes Santo",
+}
+
+
+def _festivo_exacto(fecha: dt.date) -> str | None:
+    iso = fecha.isoformat()
+    if iso in FESTIVOS_MEXICO_MOVILES:
+        return FESTIVOS_MEXICO_MOVILES[iso]
+    return FESTIVOS_MEXICO_FIJOS.get((fecha.month, fecha.day))
+
+
+def festivo_cercano(fecha: dt.date, ventana_dias: int = 1) -> dict | None:
+    """Festivo mexicano exacto en `fecha`, o hasta `ventana_dias` antes/
+    después -- para panadería, el pico de venta muchas veces es la
+    VÍSPERA (la rosca de Reyes se compra el 5, no el 6), no el día exacto
+    del festivo. Devuelve el más cercano (prioriza el día exacto sobre
+    los vecinos), o None si no hay ninguno cerca.
+
+    Esto NO dice si el festivo sube o baja la venta -- solo aporta una
+    explicación POSIBLE cuando coincide; la dirección (arriba/abajo) ya
+    la sabe quien llama (analizar_desempeno_por_hora ya sabe si el día
+    quedó por encima o por debajo del pronóstico)."""
+    mejor = None
+    for offset in range(-ventana_dias, ventana_dias + 1):
+        d = fecha + dt.timedelta(days=offset)
+        nombre = _festivo_exacto(d)
+        if nombre and (mejor is None or abs(offset) < abs(mejor["dias_diferencia"])):
+            mejor = {"nombre": nombre, "fecha_festivo": d.isoformat(), "dias_diferencia": offset}
+    return mejor
+
 
 def is_coffee(platillo: str, tipo_grupo: str, keywords: list[str]) -> bool:
     if tipo_grupo not in CAFETERIA_TIPOS:
@@ -764,6 +825,7 @@ def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = No
     # Últimos 14 días de la ventana de historia -- suficientes para una
     # sparkline legible sin saturarla de puntos.
     resumen["serie_reciente"] = serie[-14:]
+    resumen["festivo"] = festivo_cercano(target)
     return resumen
 
 
@@ -1106,6 +1168,7 @@ def analizar_desviacion_produccion(dias: list[dict], campo: str) -> dict | None:
     tendencia_pct = round(100 * (real_prom_2 - real_prom_1) / real_prom_1, 1) if real_prom_1 else 0.0
 
     peor = max(con_ambos, key=lambda d: d["real_unidades"] - d[campo])
+    festivo_peor_dia = festivo_cercano(dt.date.fromisoformat(peor["fecha"]))
 
     return {
         "n_dias": len(con_ambos),
@@ -1116,6 +1179,7 @@ def analizar_desviacion_produccion(dias: list[dict], campo: str) -> dict | None:
         "peor_dia": peor["fecha"],
         "peor_dia_real": round(peor["real_unidades"], 0),
         "peor_dia_comparado": round(peor[campo], 0),
+        "festivo_peor_dia": festivo_peor_dia,
     }
 
 
@@ -1234,22 +1298,25 @@ _UMBRAL_DESVIACION_PCT = 5.0
 _UMBRAL_CONCENTRACION = 0.4
 
 
-def analizar_desempeno_por_hora(horas: list[dict]) -> dict | None:
+def analizar_desempeno_por_hora(horas: list[dict], fecha: str | None = None) -> dict | None:
     """Diagnóstico corto de un día ya cerrado, comparando el mismo bloque de
     horas activas que se ve en el gráfico "Прогноз и факт" (viene de
     ventas_por_hora, ya recortado a horas con movimiento -- ver
     dashboard._horas_activas): cuánto se desvió la venta real del
     pronóstico, si la desviación viene de menos CLIENTES (unidades) o de un
-    ticket promedio más bajo (unidades en línea pero dinero no), y si el
-    bache se concentra en una franja horaria puntual o está repartido en
-    todo el día. Devuelve None cuando no hay pronóstico con el que comparar
-    (día sin historial suficiente) -- en ese caso no hay nada que
-    diagnosticar todavía.
+    ticket promedio más bajo (unidades en línea pero dinero no), en qué
+    horas se concentra la desviación (por ENCIMA o por DEBAJO -- antes
+    solo se calculaba para "por debajo", dejando sin explicar los días
+    inusualmente BUENOS, que es justo cuando más vale la pena entender
+    qué pasó para poder repetirlo), y si coincide con un festivo mexicano
+    conocido (ver festivo_cercano). Devuelve None cuando no hay pronóstico
+    con el que comparar (día sin historial suficiente) -- en ese caso no
+    hay nada que diagnosticar todavía.
 
-    No es una IA explicando el día -- son un par de reglas aritméticas
-    simples y transparentes sobre los mismos números que ya están en el
-    gráfico; dashboard.py solo convierte este diccionario en las frases que
-    ve Roman."""
+    No es una IA explicando el día -- son reglas aritméticas simples y
+    transparentes sobre los mismos números que ya están en el gráfico, más
+    un dato de calendario verificable (no inventado); dashboard.py solo
+    convierte este diccionario en las frases que ve Roman."""
     con_pronostico = [h for h in horas if h["tipico"] is not None]
     if not con_pronostico:
         return None
@@ -1274,8 +1341,12 @@ def analizar_desempeno_por_hora(horas: list[dict]) -> dict | None:
         estado = "en_linea"
 
     # Aporte de cada hora (con pronóstico) a la diferencia total, para
-    # encontrar las horas que más pesan en el déficit -- solo se calcula
-    # cuando de verdad hay un déficit que explicar.
+    # encontrar las horas que más pesan -- ahora en AMBOS sentidos: qué
+    # horas cargan con el déficit (por_debajo) o cuáles impulsan el
+    # excedente (por_encima). "Concentrado" = pocas horas cargan con
+    # (casi) toda la desviación (el resto del día anduvo normal);
+    # "distribuido" = la mayoría de las horas activas se movieron igual --
+    # un factor del día completo, no de un momento puntual.
     horas_criticas: list[dict] = []
     concentrado = False
     if estado == "por_debajo":
@@ -1284,12 +1355,18 @@ def analizar_desempeno_por_hora(horas: list[dict]) -> dict | None:
             key=lambda d: d["diff"],
         )
         negativas = [d for d in diffs if d["diff"] < 0]
-        # "Concentrado" = pocas horas cargan con el problema (el resto del
-        # día anduvo normal); "distribuido" = la mayoría de las horas
-        # activas terminaron por debajo -- un factor del día completo, no
-        # de un momento puntual.
         concentrado = bool(negativas) and (len(negativas) / len(con_pronostico)) <= _UMBRAL_CONCENTRACION
         horas_criticas = negativas[:3]
+    elif estado == "por_encima":
+        diffs = sorted(
+            ({"hora": h["hora"], "diff": round(h["real"] - h["tipico"], 2)} for h in con_pronostico),
+            key=lambda d: -d["diff"],
+        )
+        positivas = [d for d in diffs if d["diff"] > 0]
+        concentrado = bool(positivas) and (len(positivas) / len(con_pronostico)) <= _UMBRAL_CONCENTRACION
+        horas_criticas = positivas[:3]
+
+    festivo = festivo_cercano(dt.date.fromisoformat(fecha)) if fecha else None
 
     return {
         "estado": estado,
@@ -1301,6 +1378,7 @@ def analizar_desempeno_por_hora(horas: list[dict]) -> dict | None:
         "unid_tipico": round(unid_tipico, 2) if unid_tipico else None,
         "horas_criticas": horas_criticas,
         "concentrado": concentrado,
+        "festivo": festivo,
     }
 
 
