@@ -29,6 +29,15 @@
 .staff-page .staff-header{padding:15px 22px;border:1px solid #e1e8dd;border-radius:18px;background:#fffdf9;box-shadow:0 8px 30px #173d3309}
 .staff-page .staff-header a{background:#ecf1e8;border-color:#dbe7d8}
 .staff-page .staff-header a:hover{background:#dce9d9}
+.staff-header-actions{display:flex;align-items:center;gap:10px;margin-left:auto}
+.staff-page .staff-account{margin:0}
+.staff-language{position:relative;flex:none}
+.staff-page .staff-language>button{width:auto;min-height:37px;padding:8px 12px;border:1px solid #dbe7d8;border-radius:999px;background:#ecf1e8;color:#1b4d3b;font-size:12px;font-weight:800;white-space:nowrap}
+.staff-page .staff-language>button:hover{background:#dce9d9}
+.staff-language-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:20;min-width:150px;padding:5px;border:1px solid #dbe7d8;border-radius:13px;background:#fffdf9;box-shadow:0 12px 30px #173d3326}
+.staff-language-menu[hidden]{display:none}
+.staff-page .staff-language-menu button{display:block;width:100%;min-height:37px;margin:0;padding:8px 11px;border:0;border-radius:8px;background:transparent;color:#173d33;text-align:left;font-size:12px;font-weight:700}
+.staff-page .staff-language-menu button:hover,.staff-page .staff-language-menu button:focus-visible{background:#ecf1e8}
 .staff-page .staff-intro{position:relative;overflow:hidden;min-height:236px;margin:25px 0 18px;padding:43px 48px;border-radius:26px;background:radial-gradient(circle at 80% 15%,#427b5c 0,transparent 38%),linear-gradient(120deg,#173d33,#24543e);color:#fff;box-shadow:0 20px 45px #173d3324}
 .staff-page .staff-intro:after{content:"";position:absolute;right:-65px;bottom:-220px;width:410px;height:410px;border:1px solid #ffffff26;border-radius:50%;box-shadow:0 0 0 55px #ffffff0b,0 0 0 110px #ffffff08;pointer-events:none}
 .staff-page .staff-intro .eyebrow{color:#f0c594;letter-spacing:.22em}
@@ -91,3 +100,5 @@ textarea{resize:vertical;min-height:90px}
 .staff-page .staff-workspace .team-actions button{margin:0;padding:9px 11px;min-height:36px;font-size:11px}
 .staff-page .staff-workspace #team-section h3{margin:25px 0 8px}
 @media(max-width:680px){.staff-login-card{padding:22px}.staff-account{margin-right:8px}.staff-account strong{max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.staff-page .staff-header>a{display:none}}
+@media(max-width:680px){.staff-header-actions{gap:6px}.staff-page .staff-header-actions>a{display:none}.staff-page .staff-language>button{padding:7px 9px;font-size:11px}.staff-page .staff-account strong{max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+@media(max-width:520px){.staff-page .staff-header{flex-wrap:wrap}.staff-header-actions{width:100%;justify-content:flex-end}}

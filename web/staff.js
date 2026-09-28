@@ -51,6 +51,7 @@ function cashierRequest(path, options) { return staffFetch(path, options); }
 function showStaffLogin() {
   staffSession = ""; staffUser = null;
   sessionStorage.removeItem("el-molino-staff-session");
+  setMessage("staff-login-message", "");
   byId("staff-login").hidden = false;
   byId("staff-account").hidden = true;
   document.querySelector(".staff-tabs").hidden = true;
@@ -158,8 +159,8 @@ async function loadCashierPurchases(customerId) {
     if (selectedCustomer?.id !== customerId) return;
     if (!purchases.length) { setMessage("cashier-purchases-message", "Todavía no hay tickets registrados."); return; }
     setMessage("cashier-purchases-message", "");
-    const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
-    const date = new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "short", year: "numeric", timeZone: "America/Mexico_City" });
+    const money = new Intl.NumberFormat(staffI18n.locale(), { style: "currency", currency: "MXN" });
+    const date = new Intl.DateTimeFormat(staffI18n.locale(), { day: "numeric", month: "short", year: "numeric", timeZone: "America/Mexico_City" });
     purchases.forEach((purchase) => {
       const card = document.createElement("article"); card.className = "cashier-purchase";
       const title = document.createElement("strong"); title.textContent = purchase.external_reference || "Ticket sin número";
@@ -238,7 +239,7 @@ byId("load-wansoft-ticket").addEventListener("click", async () => {
     const ticket = await cashierRequest(`/cashier/wansoft-tickets/${encodeURIComponent(ticketId)}`);
     if (byId("ticket").value.trim() !== ticketId || selectedCustomer?.id !== customerId) return;
     loadedWansoftTicketId = ticketId;
-    const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+    const money = new Intl.NumberFormat(staffI18n.locale(), { style: "currency", currency: "MXN" });
     const day = ticket.purchased_at.slice(0, 10).split("-").reverse().join("/");
     byId("wansoft-summary").textContent = `${ticket.sucursal} · ${day} · ${money.format(Number(ticket.total_amount))} · ${ticket.items.length} productos`;
     const list = byId("wansoft-items");
@@ -377,7 +378,7 @@ byId("redemption-form").addEventListener("submit", async (event) => {
 
 byId("fulfill-redemption").addEventListener("click", async () => {
   if (!inspectedRedemption || inspectedRedemption.status !== "redeemed") return;
-  if (!confirm(`¿Entregar ${inspectedRedemption.reward_name} a ${inspectedRedemption.customer_name}?`)) return;
+  if (!confirm(staffI18n.translate(`¿Entregar ${inspectedRedemption.reward_name} a ${inspectedRedemption.customer_name}?`))) return;
   setMessage("redemption-message", "Confirmando…");
   try {
     const redemption = await cashierRequest(`/cashier/redemptions/${encodeURIComponent(inspectedRedemption.id)}/fulfill`, { method: "POST" });
@@ -440,7 +441,7 @@ function renderReconciliation() {
   setMessage("reconciliation-message", `${verified} de ${reconciliationRows.length} tickets coinciden. ${review.length} requieren revisión. Mostrando ${visible.length}.`);
   byId("export-reconciliation").disabled = visible.length === 0;
   if (!visible.length && review.length) container.textContent = "No hay tickets en este filtro.";
-  const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+  const money = new Intl.NumberFormat(staffI18n.locale(), { style: "currency", currency: "MXN" });
   visible.forEach((row) => {
       const card = document.createElement("article");
       card.className = `staff-result reconciliation-result ${row.status}`;
@@ -472,7 +473,7 @@ byId("reconciliation-filter").addEventListener("change", renderReconciliation);
 byId("export-reconciliation").addEventListener("click", () => {
   const rows = visibleReconciliationRows();
   if (!rows.length) return;
-  const columns = ["Ticket", "Estado", "Cliente", "Fecha", "Acreditado MXN", "Wansoft MXN", "Diferencias de productos"];
+  const columns = ["Ticket", "Estado", "Cliente", "Fecha", "Acreditado MXN", "Wansoft MXN", "Diferencias de productos"].map(staffI18n.translate);
   const lines = [columns, ...rows.map((row) => [row.external_reference, reconciliationLabels[row.status] || row.status,
     row.customer_name, row.purchased_at, row.credited_amount, row.wansoft_amount ?? "",
     (row.item_differences || []).join(" | ")])];
@@ -530,7 +531,7 @@ async function loadCampaigns() {
     campaigns.forEach((campaign) => {
       const card = document.createElement("article"); card.className = "staff-result";
       const name = document.createElement("strong"); name.textContent = campaign.name;
-      const detail = document.createElement("p"); detail.textContent = `${campaign.status} · ${campaign.channel} · ${campaign.recipient_count} destinatarios`;
+      const detail = document.createElement("p"); detail.textContent = `${staffI18n.campaignState(campaign.status)} · ${staffI18n.campaignChannel(campaign.channel)} · ${campaign.recipient_count} destinatarios`;
       const stats = document.createElement("p");
       const statsButton = document.createElement("button"); statsButton.type = "button"; statsButton.textContent = "Ver resultados";
       statsButton.addEventListener("click", async () => {
@@ -563,7 +564,7 @@ async function loadCampaigns() {
         activate.addEventListener("click", async () => {
           try {
             const preview = await showPreview();
-            if (!preview.eligible_count || !confirm(`¿Mostrar ${campaign.name} a ${preview.eligible_count} clientes en el Club?`)) return;
+            if (!preview.eligible_count || !confirm(staffI18n.translate(`¿Mostrar ${campaign.name} a ${preview.eligible_count} clientes en el Club?`))) return;
             await managerRequest(`/admin/campaigns/${campaign.id}/activate`, { method: "POST" });
             await loadCampaigns();
           } catch (error) { setMessage("campaign-list-message", error.message, true); }
@@ -626,7 +627,7 @@ async function loadCampaigns() {
         sendButton.addEventListener("click", async () => {
           try {
             const preview = await showPreview();
-            if (sendButton.disabled || !confirm(`¿Enviar hasta ${Math.min(preview.pending_sms_count, 5)} SMS de ${campaign.name}? Puede generar cargos.`)) return;
+            if (sendButton.disabled || !confirm(staffI18n.translate(`¿Enviar hasta ${Math.min(preview.pending_sms_count, 5)} SMS de ${campaign.name}? Puede generar cargos.`))) return;
             sendButton.disabled = true;
             const result = await managerRequest(`/admin/campaigns/${campaign.id}/send-sms`, { method: "POST" });
             sendResult.textContent = `${result.sent} aceptados · ${result.uncertain} sin confirmación · ${result.invalid_phone} teléfonos inválidos · ${result.remaining} pendientes.`;
@@ -682,7 +683,7 @@ async function loadStaffActions() {
       const item = document.createElement("div"); item.className = "staff-result";
       const title = document.createElement("strong"); title.textContent = row.full_name;
       const detail = document.createElement("p");
-      detail.textContent = `${new Date(`${row.created_at}Z`).toLocaleString("es-MX")} · ${actionNames[row.action] || row.action}${row.target ? ` · ${row.target}` : ""}`;
+      detail.textContent = `${new Date(`${row.created_at}Z`).toLocaleString(staffI18n.locale())} · ${staffI18n.translate(actionNames[row.action] || row.action)}${row.target ? ` · ${row.target}` : ""}`;
       item.append(title, detail); list.append(item);
     });
   } catch (error) { list.textContent = error.message; }
@@ -748,3 +749,11 @@ byId("team-create-form").addEventListener("submit", async (event) => {
   } catch (error) { setMessage("team-message", error.message, true); }
 });
 byId("load-staff-actions").addEventListener("click", loadStaffActions);
+
+staffI18n.onChange(() => {
+  refreshPurchaseRows();
+  if (reconciliationRows.length) renderReconciliation();
+  if (selectedCustomer) loadCashierPurchases(selectedCustomer.id);
+  if (staffUser?.is_owner) loadStaffActions();
+  if (staffUser && byId("campaign-list").childElementCount) loadCampaigns();
+});
