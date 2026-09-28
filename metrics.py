@@ -22,6 +22,12 @@ from db import get_coffee_keywords
 
 CAFETERIA_TIPOS = {"CAFETERIA", "FRAPPES"}
 
+# Grupos que caen en "Остальные напитки" cuando no son café ni frappé.
+# REFRESCOS (refrescos embotellados) es volumen mínimo pero es bebida --
+# antes quedaba fuera de "Напитки" por completo; ahora se suma aquí para
+# que "Напитки" cubra TODA bebida del menú, no solo CAFETERIA/FRAPPES.
+OTRAS_BEBIDAS_TIPOS = {"CAFETERIA", "REFRESCOS"}
+
 # "Сегодня" здесь НИКОГДА не берётся из часов компьютера -- только из
 # tiempo.hoy(), то есть по времени Сан-Луис-Потоси. Почему так и что
 # ломалось раньше -- подробно в шапке tiempo.py.
@@ -111,7 +117,7 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
     obtener exactamente "bebidas", en dinero, en % o en unidades, sin
     explicar un doble conteo cada vez):
 
-      - bebidas   -- TODA la categoría "напитки" (CAFETERIA + FRAPPES).
+      - bebidas   -- TODA bebida del menú (CAFETERIA + FRAPPES + REFRESCOS).
       - cafe      -- solo café caliente/frío que NO es frappé (is_coffee
                      arriba, excluyendo tipo_grupo FRAPPES).
       - frappe    -- TODA la categoría FRAPPES, incluido el frappé con
@@ -121,7 +127,10 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
                      producto (bebida fría con hielo/blender), no una
                      pregunta de "¿lleva café o no?".
       - otras     -- resto de CAFETERIA que no es café (chai, matcha,
-                     taro, limonada, chocolate...).
+                     taro, limonada, chocolate...) MÁS todo REFRESCOS
+                     (refrescos embotellados) -- volumen mínimo, pero es
+                     bebida, y así "bebidas" cubre TODO lo que se vende
+                     como bebida, sin dejar nada fuera.
 
     café + frappe + otras == bebidas, exactamente, en las tres medidas
     (dinero, % de ventas totales, unidades) -- por construcción, no por
@@ -168,7 +177,7 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
             elif is_coffee(row["platillo"], row["tipo_grupo"], keywords):
                 cafe[key] += row["importe"]
                 unid_cafe[key] += row["cantidad"]
-            elif row["tipo_grupo"] == "CAFETERIA":
+            elif row["tipo_grupo"] in OTRAS_BEBIDAS_TIPOS:
                 otras_bebidas[key] += row["importe"]
                 unid_otras_bebidas[key] += row["cantidad"]
 
@@ -265,7 +274,7 @@ def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
             elif is_coffee(row["platillo"], row["tipo_grupo"], keywords):
                 cafe[hora] += row["importe"]
                 u_cafe[hora] += row["cantidad"]
-            elif row["tipo_grupo"] == "CAFETERIA":
+            elif row["tipo_grupo"] in OTRAS_BEBIDAS_TIPOS:
                 otras[hora] += row["importe"]
                 u_otras[hora] += row["cantidad"]
 
@@ -317,7 +326,7 @@ def top_platillos_bebidas(engine: Engine, sucursal: str | None = None,
                 destino = frappe
             elif is_coffee(row["platillo"], row["tipo_grupo"], keywords):
                 destino = cafe
-            elif row["tipo_grupo"] == "CAFETERIA":
+            elif row["tipo_grupo"] in OTRAS_BEBIDAS_TIPOS:
                 destino = otras
             else:
                 continue
