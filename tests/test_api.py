@@ -19,7 +19,7 @@ def test_production_requires_persistent_config(monkeypatch):
         create_app()
 
 
-def make_client() -> TestClient:
+def make_client(campaign_sender=None) -> TestClient:
     engine = create_engine(
         "sqlite://",
         future=True,
@@ -27,7 +27,7 @@ def make_client() -> TestClient:
         poolclass=StaticPool,
     )
     customer_metadata.create_all(engine)
-    return TestClient(create_app(engine, expose_debug_code=True, token_secret="test-secret", admin_api_key="admin-test-key", cashier_api_key="cashier-test-key"))
+    return TestClient(create_app(engine, expose_debug_code=True, token_secret="test-secret", admin_api_key="admin-test-key", cashier_api_key="cashier-test-key", campaign_sender=campaign_sender))
 
 
 def create_customer(client: TestClient, marketing_consent: bool = False) -> dict:
@@ -179,6 +179,22 @@ def test_labsmobile_registration_uses_sms_and_canonical_phone(monkeypatch):
     assert verified.json()["customer"]["phone"] == "+524441234567"
 
 
+def test_labsmobile_campaign_sender_uses_message_and_canonical_phone(monkeypatch):
+    from sms_provider import make_labsmobile_message_sender
+    sent = []
+    class Accepted:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"code": "0"}
+    def fake_post(url, *, auth, json, timeout):
+        sent.append(json)
+        return Accepted()
+    monkeypatch.setattr("sms_provider.httpx.post", fake_post)
+    make_labsmobile_message_sender("test-user", "test-token", test_mode=True)("+52 444 123 4567", "Ven por café")
+    assert sent == [{"message": "Ven por café", "recipient": [{"msisdn": "524441234567"}], "test": 1}]
+
+
 def test_labsmobile_rejection_does_not_expose_provider_details(monkeypatch):
     class Rejected:
         def raise_for_status(self):
@@ -293,6 +309,52 @@ def test_campaign_preview_rechecks_consent_before_activation():
     assert preview.json()["excluded_count"] == 1
     assert client.post(f"/admin/campaigns/{campaign['id']}/activate", headers=headers).status_code == 200
     assert client.get(path, headers=headers).json()["excluded_count"] == 0
+
+
+def test_sms_campaign_sends_only_with_consent_and_never_repeats():
+    delivered = []
+    client = make_client(campaign_sender=lambda phone, message: delivered.append((phone, message)))
+    headers = {"X-Admin-Key": "admin-test-key"}
+    customers = [client.post("/customers", json={"full_name": name, "phone": phone, "marketing_consent": True},
+                             headers=cashier_headers()).json() for name, phone in
+                 [("Ana", "4443209681"), ("Luis", "4443209682")]]
+    campaign = client.post("/admin/campaigns", json={"name": "Invitación", "channel": "sms",
+        "message": "Ven por café", "customer_ids": [customer["id"] for customer in customers]}, headers=headers).json()
+    path = f"/admin/campaigns/{campaign['id']}/send-sms"
+    assert client.post(path).status_code == 401
+    assert client.post(path, headers=headers).status_code == 400
+    assert client.post(f"/admin/campaigns/{campaign['id']}/activate", headers=headers).status_code == 200
+    client.patch(f"/customers/{customers[1]['id']}", json={"marketing_consent": False},
+                 headers=auth_headers(client, "4443209682"))
+    assert client.post(path, headers=headers).json() == {"sent": 1, "uncertain": 0, "invalid_phone": 0, "remaining": 0}
+    assert delivered == [("+524443209681", "Ven por café")]
+    preview = client.get(f"/admin/campaigns/{campaign['id']}/preview", headers=headers).json()
+    assert preview["sent_sms_count"] == 1 and preview["excluded_count"] == 1
+    customer_headers = auth_headers(client, "4443209681")
+    assert client.post(f"/customers/{customers[0]['id']}/campaigns/{campaign['id']}/events",
+                       json={"event_type": "opened"}, headers=customer_headers).status_code == 201
+    assert client.get(f"/admin/campaigns/{campaign['id']}/preview", headers=headers).json()["sent_sms_count"] == 1
+    assert client.post(path, headers=headers).json()["sent"] == 0
+    assert len(delivered) == 1
+
+
+def test_sms_campaign_uncertain_attempt_is_not_automatically_retried():
+    attempts = []
+    def fail(phone, message):
+        attempts.append(phone)
+        raise RuntimeError("provider timeout")
+    client = make_client(campaign_sender=fail)
+    headers = {"X-Admin-Key": "admin-test-key"}
+    customer = client.post("/customers", json={"full_name": "Ana", "phone": "4443209681", "marketing_consent": True},
+                           headers=cashier_headers()).json()
+    campaign = client.post("/admin/campaigns", json={"name": "Invitación", "channel": "sms",
+        "message": "Ven por café", "customer_ids": [customer["id"]]}, headers=headers).json()
+    client.post(f"/admin/campaigns/{campaign['id']}/activate", headers=headers)
+    path = f"/admin/campaigns/{campaign['id']}/send-sms"
+    assert client.post(path, headers=headers).json() == {"sent": 0, "uncertain": 1, "invalid_phone": 0, "remaining": 0}
+    assert client.get(f"/admin/campaigns/{campaign['id']}/preview", headers=headers).json()["uncertain_sms_count"] == 1
+    assert client.post(path, headers=headers).json()["uncertain"] == 0
+    assert len(attempts) == 1
 
 
 def test_campaign_interactions_are_visible_in_analytics():
