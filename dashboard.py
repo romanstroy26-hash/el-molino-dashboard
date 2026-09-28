@@ -198,6 +198,11 @@ def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_top_platillos_bebidas(_engine, sucursal, desde, hasta):
+    return metrics.top_platillos_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta, n=6)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_top_platillos(_engine, sucursal, desde, hasta, n):
     return metrics.top_platillos(_engine, sucursal=sucursal, desde=desde, hasta=hasta, n=n)
 
@@ -1024,6 +1029,52 @@ def page_dashboard():
             "почасовой разбор недоступен. Перезагрузи те же файлы Wansoft "
             "через Start.bat -> пункт 1, это дозаполнит время без дублей."
         )
+
+    # ---- Что именно продаётся внутри каждой категории ------------------------
+    # Динамика и почасовой разбор выше отвечают "сколько" и "когда", но не
+    # "ЧТО именно" -- если Фраппе выросло на 2 пт, это тянет один новый вкус
+    # или рост равномерный по всему меню? Без этого ответа "выросло" --
+    # наполовину бесполезная новость: непонятно, что закреплять в меню, а
+    # что убирать.
+    st.subheader("Что именно продаётся внутри каждой категории")
+    top_por_categoria = _cache_top_platillos_bebidas(
+        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+    )
+    columnas_top = st.columns(3)
+    _KAT_TOP = ["Кофе", "Фраппе", "Остальные напитки"]
+    for col, cat in zip(columnas_top, _KAT_TOP):
+        filas_cat = top_por_categoria[cat]
+        with col:
+            st.markdown(f"**{cat}**")
+            if not filas_cat:
+                st.caption("Нет продаж за этот диапазон.")
+                continue
+            df_top = pd.DataFrame(filas_cat)
+            if medida_label == "Штуки, шт":
+                col_valor, formato_top, titulo_top = "unidades", ",.0f", "шт"
+            elif medida_label == "Доля, % от продаж":
+                col_valor, formato_top, titulo_top = "pct_categoria", ".1f", f"% от «{cat}»"
+            else:
+                col_valor, formato_top, titulo_top = "ventas", ",.0f", "$"
+            grafico_top = alt.Chart(df_top).mark_bar(
+                color=_COLOR_KATEGORII[cat], cornerRadiusTopRight=3, cornerRadiusBottomRight=3,
+            ).encode(
+                x=alt.X(f"{col_valor}:Q", title=titulo_top),
+                y=alt.Y("platillo:N", sort="-x", title=None),
+                tooltip=[
+                    alt.Tooltip("platillo:N", title="Позиция"),
+                    alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+                    alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+                    alt.Tooltip("pct_categoria:Q", title=f"% от «{cat}»", format=".1f"),
+                ],
+            ).properties(height=26 * len(df_top) + 20)
+            st.altair_chart(grafico_top, width="stretch")
+    st.caption(
+        "Топ-6 позиций меню по выручке внутри каждой категории -- та же "
+        "точка и диапазон дат, что и везде на странице. Помогает увидеть, "
+        "тянет ли рост категории один продукт или он распределён по всему "
+        "меню."
+    )
 
     # ---- Таблица ---------------------------------------------------------------
     with st.expander("Таблица (данные графика выше, все измерения сразу)"):

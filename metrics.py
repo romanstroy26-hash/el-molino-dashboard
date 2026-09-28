@@ -288,6 +288,61 @@ def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
     ]
 
 
+def top_platillos_bebidas(engine: Engine, sucursal: str | None = None,
+                           desde: str | None = None, hasta: str | None = None,
+                           n: int = 6) -> dict[str, list[dict]]:
+    """La MISMA partición de tres categorías (café/frappé/otras bebidas --
+    ver serie_por_periodo), pero por POSICIÓN DE MENÚ dentro de cada una,
+    no por fecha ni por hora. Responde la pregunta que ni la dinámica ni
+    el patrón por hora contestan: "la categoría creció -- ¿por CUÁL
+    producto exactamente?" -- por ejemplo si el crecimiento de Frappé es
+    parejo entre sabores o lo carga un solo producto nuevo."""
+    keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
+
+    sql = "SELECT tipo_grupo, platillo, importe, cantidad FROM sales_lines WHERE 1=1"
+    params: dict = {}
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    if desde:
+        sql += " AND fecha >= :desde"
+        params["desde"] = desde
+    if hasta:
+        sql += " AND fecha <= :hasta"
+        params["hasta"] = hasta
+
+    cafe: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    frappe: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    otras: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            clave = row["platillo"] or "(без названия)"
+            es_cafe = is_coffee(row["platillo"], row["tipo_grupo"], keywords)
+            if es_cafe:
+                destino = cafe
+            elif row["tipo_grupo"] == "FRAPPES":
+                destino = frappe
+            elif row["tipo_grupo"] == "CAFETERIA":
+                destino = otras
+            else:
+                continue
+            destino[clave][0] += row["importe"]
+            destino[clave][1] += row["cantidad"]
+
+    def _top(datos: dict[str, list[float]]) -> list[dict]:
+        total = sum(v[0] for v in datos.values())
+        filas = [
+            {"platillo": k, "ventas": round(v[0], 2), "unidades": round(v[1], 2),
+             "pct_categoria": round(100 * v[0] / total, 1) if total else 0.0}
+            for k, v in datos.items()
+        ]
+        filas.sort(key=lambda r: r["ventas"], reverse=True)
+        return filas[:n]
+
+    return {"Кофе": _top(cafe), "Фраппе": _top(frappe), "Остальные напитки": _top(otras)}
+
+
 def _filtro_rango_sql(sucursal, desde, hasta):
     """Construye el fragmento WHERE + parámetros compartido por varias
     consultas de abajo (mismo patrón que serie_por_periodo)."""
