@@ -23,19 +23,18 @@
   </head>
   <body class="staff-page">
     <main class="staff-shell">
-      <header class="staff-header site-header"><div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M33 8c-14 5-23 17-21 31 2 13 15 21 28 16 13-5 20-18 15-31C50 11 41 7 33 8Z" fill="currentColor"/><path d="M46 13c-4 7-6 13-15 19-9 6-13 11-13 18" fill="none" stroke="#f8f2e6" stroke-width="3" stroke-linecap="round"/></svg></span><span class="brand-wordmark"><strong>EL MOLINO</strong><small>PANEL DEL EQUIPO</small></span></div><a href="./index.html">Ir al Club <span aria-hidden="true">↗</span></a></header>
+      <header class="staff-header site-header"><div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M33 8c-14 5-23 17-21 31 2 13 15 21 28 16 13-5 20-18 15-31C50 11 41 7 33 8Z" fill="currentColor"/><path d="M46 13c-4 7-6 13-15 19-9 6-13 11-13 18" fill="none" stroke="#f8f2e6" stroke-width="3" stroke-linecap="round"/></svg></span><span class="brand-wordmark"><strong>EL MOLINO</strong><small>PANEL DEL EQUIPO</small></span></div><div class="staff-account" id="staff-account" hidden><strong id="staff-account-name"></strong><button id="staff-logout" type="button" class="secondary">Salir</button></div><a href="./index.html">Ir al Club <span aria-hidden="true">↗</span></a></header>
       <div class="staff-intro"><div><p class="eyebrow">OPERACIÓN DIARIA</p><h1>Panel del equipo<span class="welcome-dot">.</span></h1><p class="muted">Caja y gerencia, cada una con sus herramientas en un solo lugar.</p></div><div class="staff-intro-mark" aria-hidden="true">EM<br>·</div></div>
-      <nav class="staff-tabs" aria-label="Área de trabajo"><button type="button" class="active" data-staff-view="cashier-view" aria-pressed="true">Caja</button><button type="button" data-staff-view="manager-view" aria-pressed="false">Gerencia</button></nav>
-      <p class="staff-security">La clave de acceso se conserva solo mientras esta página esté abierta.</p>
+      <section id="staff-login" class="card staff-login-card"><p class="eyebrow">ACCESO PERSONAL</p><h2>Entra con tu código</h2><p class="muted">Usa el código que te entregó la gerencia. Cada acción quedará registrada en tu cuenta.</p><form id="staff-login-form"><label for="staff-code">Código personal</label><input id="staff-code" autocomplete="off" autocapitalize="characters" required><button>Entrar</button></form><p id="staff-login-message" class="message" role="status"></p><details id="staff-bootstrap" hidden><summary>Crear la cuenta principal</summary><form id="staff-bootstrap-form"><label for="owner-name">Tu nombre</label><input id="owner-name" required maxlength="160"><label for="owner-key">Clave actual de gerencia</label><input id="owner-key" type="password" required autocomplete="off"><button>Crear cuenta</button></form></details><details id="staff-recovery" hidden><summary>Recuperar código principal</summary><form id="staff-recovery-form"><label for="recovery-key">Clave actual de gerencia</label><input id="recovery-key" type="password" required autocomplete="off"><button>Generar nuevo código</button></form></details><div id="bootstrap-code-box" class="staff-code-box" hidden></div></section>
+      <nav class="staff-tabs" aria-label="Área de trabajo" hidden><button type="button" class="active" data-staff-view="cashier-view" aria-pressed="true">Caja</button><button type="button" data-staff-view="manager-view" aria-pressed="false">Gerencia</button></nav>
       <p id="staff-file-notice" class="staff-file-notice" hidden>Vista previa. Para usar caja y gerencia, abre <strong>Club.bat</strong> y entra en <strong>http://127.0.0.1:8000/staff.html</strong>.</p>
 
-      <div class="staff-workspace">
+      <div class="staff-workspace" hidden>
         <div id="cashier-view" class="staff-view">
           <nav class="cashier-tabs" aria-label="Tareas de caja"><button type="button" class="active" data-cashier-view="cashier-workflow" aria-pressed="true">Clientes y tickets</button><button type="button" data-cashier-view="redemption-section" aria-pressed="false">Entregar recompensa</button></nav>
           <div id="cashier-workflow">
           <section id="cashier-section" class="card">
             <p class="eyebrow">01 · ATENCIÓN AL CLIENTE</p><h2>Caja</h2>
-            <label for="cashier-key">Clave de caja</label><input id="cashier-key" type="password" autocomplete="off">
             <form id="lookup-form">
               <label for="lookup-phone">Teléfono del cliente</label><input id="lookup-phone" type="tel" required>
               <button>Buscar cliente</button>
@@ -84,8 +83,7 @@
         </div>
 
         <div id="manager-view" class="staff-view" hidden>
-          <section class="manager-access card"><p class="eyebrow">HERRAMIENTAS DE GERENCIA</p><h2>Gerencia</h2><label for="admin-key">Clave de gerencia</label><input id="admin-key" type="password" autocomplete="off"></section>
-          <nav class="manager-tabs" aria-label="Herramientas de gerencia"><button type="button" class="active" data-manager-view="manager-section" aria-pressed="true">Clientes</button><button type="button" data-manager-view="reconciliation-section" aria-pressed="false">Tickets</button><button type="button" data-manager-view="rewards-section" aria-pressed="false">Recompensas</button><button type="button" data-manager-view="campaigns-section" aria-pressed="false">Campañas</button></nav>
+          <nav class="manager-tabs" aria-label="Herramientas de gerencia"><button type="button" class="active" data-manager-view="manager-section" data-permission="analytics" aria-pressed="true">Clientes</button><button type="button" data-manager-view="reconciliation-section" data-permission="analytics" aria-pressed="false">Tickets</button><button type="button" data-manager-view="rewards-section" data-permission="rewards" aria-pressed="false">Recompensas</button><button type="button" data-manager-view="campaigns-section" data-permission="campaigns" aria-pressed="false">Campañas</button><button type="button" data-manager-view="team-section" data-permission="owner" aria-pressed="false">Equipo</button></nav>
           <section id="manager-section" class="card">
             <p class="eyebrow">CONOCE A TUS CLIENTES</p><h2>Clientes</h2>
             <label for="segment">Segmento</label><select id="segment"><option value="new">Nuevos</option><option value="active">Activos</option><option value="loyal">Frecuentes</option><option value="at_risk">En riesgo</option></select>
@@ -128,6 +126,7 @@
             <div id="campaign-list" class="staff-results"></div>
             </div>
           </section>
+          <section id="team-section" class="card" hidden><p class="eyebrow">ACCESO Y CONTROL</p><h2>Equipo</h2><p class="muted">Crea un código personal y elige las tareas permitidas. El código se muestra una sola vez.</p><form id="team-create-form"><label for="team-name">Nombre del empleado</label><input id="team-name" required maxlength="160"><fieldset class="team-permissions"><legend>Permisos</legend><label><input type="checkbox" name="permission" value="cashier" checked> Caja y tickets</label><label><input type="checkbox" name="permission" value="analytics"> Analítica y revisión</label><label><input type="checkbox" name="permission" value="rewards"> Recompensas</label><label><input type="checkbox" name="permission" value="campaigns"> Campañas</label></fieldset><button>Crear empleado</button></form><p id="team-message" class="message" role="status"></p><div id="team-code-box" class="staff-code-box" hidden></div><h3>Empleados</h3><div id="team-list" class="staff-results"></div><div class="campaign-list-section"><h3>Acciones recientes</h3><button id="load-staff-actions" type="button" class="secondary">Actualizar acciones</button><div id="staff-actions" class="staff-results"></div></div></section>
         </div>
       </div>
     </main>
