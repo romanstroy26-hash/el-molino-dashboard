@@ -327,6 +327,7 @@ byId("load-reconciliation").addEventListener("click", async () => {
     const labels = {
       pending_import: "Pendiente de importar",
       amount_mismatch: "Importe diferente",
+      items_mismatch: "Productos diferentes",
       unverifiable: "Número no verificable",
     };
     review.forEach((row) => {
@@ -338,7 +339,15 @@ byId("load-reconciliation").addEventListener("click", async () => {
       const detail = document.createElement("p");
       const actual = row.wansoft_amount === null ? "sin venta Wansoft cargada" : `Wansoft ${money.format(Number(row.wansoft_amount))}`;
       detail.textContent = `${row.customer_name} · acreditado ${money.format(Number(row.credited_amount))} · ${actual}`;
-      card.append(badge, title, detail); container.append(card);
+      card.append(badge, title, detail);
+      if (row.item_differences?.length) {
+        const differences = document.createElement("ul"); differences.className = "reconciliation-differences";
+        row.item_differences.forEach((difference) => {
+          const item = document.createElement("li"); item.textContent = difference; differences.append(item);
+        });
+        card.append(differences);
+      }
+      container.append(card);
     });
   } catch (error) { setMessage("reconciliation-message", error.message, true); }
 });
