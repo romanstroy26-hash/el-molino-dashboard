@@ -615,6 +615,158 @@ def _recortar_atipicos(valores: list[float]) -> list[float]:
     return [min(max(v, piso), techo) for v in valores]
 
 
+def serie_dia_resumen(engine: Engine, desde: str, hasta: str,
+                       sucursal: str | None = None) -> list[dict]:
+    """Lo mismo que resumen_dia, pero para CADA día de un rango -- fuente
+    para las mini-tendencias (sparklines) y para calcular "lo típico de
+    este día de semana" en la página "Главная" (ver resumen_dia_con_tipico).
+
+    Dos consultas, ambas agregadas en SQL (GROUP BY), no fila por fila:
+      - cheques (movimiento_pdv únicos) y ventas totales, por fecha --
+        agregable directo, no depende de la clasificación por categoría.
+      - ventas por (fecha, tipo_grupo, platillo) -- el mínimo detalle que
+        necesita is_coffee() para clasificar, agregado de todas formas
+        (miles de filas, no millones, incluso con 90 días de rango)."""
+    keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
+
+    sql_totales = ("SELECT fecha, COUNT(DISTINCT movimiento_pdv) AS num_ordenes, "
+                   "SUM(importe) AS ventas_totales FROM sales_lines "
+                   "WHERE fecha >= :desde AND fecha <= :hasta")
+    params: dict = {"desde": desde, "hasta": hasta}
+    if sucursal:
+        sql_totales += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    sql_totales += " GROUP BY fecha"
+
+    sql_cat = ("SELECT fecha, tipo_grupo, platillo, SUM(importe) AS importe "
+               "FROM sales_lines WHERE fecha >= :desde AND fecha <= :hasta")
+    if sucursal:
+        sql_cat += " AND sucursal = :sucursal"
+    sql_cat += " GROUP BY fecha, tipo_grupo, platillo"
+
+    totales: dict[str, dict] = {}
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql_totales), params).mappings():
+            totales[row["fecha"]] = {
+                "num_ordenes": row["num_ordenes"], "ventas_totales": row["ventas_totales"],
+            }
+
+    por_categoria: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql_cat), params).mappings():
+            tg = (row["tipo_grupo"] or "").upper()
+            if is_coffee(row["platillo"], row["tipo_grupo"], keywords):
+                cat = "Café"
+            elif tg == "PANADERIA":
+                cat = "Panadería"
+            elif tg == "PASTELERIA":
+                cat = "Pastelería"
+            else:
+                cat = "Остальное"
+            por_categoria[row["fecha"]][cat] += row["importe"]
+
+    salida = []
+    for fecha, t in sorted(totales.items()):
+        ventas_totales = t["ventas_totales"]
+        num_ordenes = t["num_ordenes"]
+        cats_dia = por_categoria.get(fecha, {})
+
+        def _pct(cat: str) -> float:
+            return round(100 * cats_dia.get(cat, 0.0) / ventas_totales, 1) if ventas_totales else 0.0
+
+        salida.append({
+            "fecha": fecha,
+            "num_ordenes": num_ordenes,
+            "ventas_totales": round(ventas_totales, 2),
+            "cheque_promedio": round(ventas_totales / num_ordenes, 2) if num_ordenes else 0.0,
+            "panaderia_pct": _pct("Panadería"),
+            "pasteleria_pct": _pct("Pastelería"),
+            "cafe_pct": _pct("Café"),
+            "otras_pct": _pct("Остальное"),
+        })
+    return salida
+
+
+def _tipico_recencia(valores_por_fecha: dict[dt.date, float], target: dt.date) -> float | None:
+    """Promedio ponderado por recencia del MISMO día de semana que
+    `target` (nunca incluye `target` mismo), con outliers suavizados --
+    mismo método que panaderia_real_y_pronostico/ventas_por_hora,
+    generalizado aquí para cualquier serie diaria (ventas, ticket
+    promedio, % de categoría...), no solo unidades de Panadería."""
+    historicos = [
+        (f, v) for f, v in valores_por_fecha.items()
+        if f.weekday() == target.weekday() and f != target
+    ]
+    if not historicos:
+        return None
+    valores = _recortar_atipicos([v for _, v in historicos])
+    pesos = [_peso_recencia(f, target) for f, _ in historicos]
+    peso_total = sum(pesos)
+    if not peso_total:
+        return None
+    return sum(v * p for v, p in zip(valores, pesos)) / peso_total
+
+
+_DIAS_HISTORIA_TIPICO_DIA = 90
+
+
+def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = None) -> dict:
+    """resumen_dia + "¿es esto normal para un {día de semana}?" -- sin
+    esto, la página "Главная" muestra números sueltos sin con qué
+    compararlos (un lunes con 54.5% Panadería, ¿es alto o el de siempre?).
+    Añade, sobre el mismo resumen:
+      - tipico_ventas_totales / ventas_vs_tipico_pct
+      - tipico_cheque_promedio / cheque_vs_tipico_pct
+      - por cada categoría: tipico_pct / dif_pt (puntos porcentuales)
+      - serie_reciente -- los últimos días del rango de historia, para
+        dibujar mini-tendencias (sparklines) en el dashboard.
+
+    "Típico" sale de _DIAS_HISTORIA_TIPICO_DIA días ANTES de `fecha`,
+    filtrado al mismo día de semana y ponderado por recencia (ver
+    _tipico_recencia) -- igual que el resto de pronósticos de este
+    archivo, no una comparación inventada aparte."""
+    resumen = resumen_dia(engine, fecha, sucursal=sucursal)
+    target = dt.date.fromisoformat(fecha)
+    desde_historia = (target - dt.timedelta(days=_DIAS_HISTORIA_TIPICO_DIA)).isoformat()
+    hasta_historia = (target - dt.timedelta(days=1)).isoformat()
+    serie = serie_dia_resumen(engine, desde_historia, hasta_historia, sucursal=sucursal)
+
+    ventas_por_fecha = {dt.date.fromisoformat(d["fecha"]): d["ventas_totales"] for d in serie}
+    ticket_por_fecha = {
+        dt.date.fromisoformat(d["fecha"]): d["cheque_promedio"] for d in serie if d["num_ordenes"]
+    }
+
+    tipico_ventas = _tipico_recencia(ventas_por_fecha, target)
+    tipico_ticket = _tipico_recencia(ticket_por_fecha, target)
+
+    resumen["tipico_ventas_totales"] = round(tipico_ventas, 2) if tipico_ventas is not None else None
+    resumen["ventas_vs_tipico_pct"] = (
+        _delta_pct(resumen["ventas_totales"], tipico_ventas) if tipico_ventas else None
+    )
+    resumen["tipico_cheque_promedio"] = round(tipico_ticket, 2) if tipico_ticket is not None else None
+    resumen["cheque_vs_tipico_pct"] = (
+        _delta_pct(resumen["cheque_promedio"], tipico_ticket) if tipico_ticket else None
+    )
+
+    campo_pct = {
+        "Panadería": "panaderia_pct", "Pastelería": "pasteleria_pct",
+        "Café": "cafe_pct", "Остальное": "otras_pct",
+    }
+    for cat in resumen["categorias"]:
+        campo = campo_pct.get(cat["categoria"])
+        valores_cat = (
+            {dt.date.fromisoformat(d["fecha"]): d[campo] for d in serie} if campo else {}
+        )
+        tipico_pct = _tipico_recencia(valores_cat, target) if valores_cat else None
+        cat["tipico_pct"] = round(tipico_pct, 1) if tipico_pct is not None else None
+        cat["dif_pt"] = round(cat["pct"] - tipico_pct, 1) if tipico_pct is not None else None
+
+    # Últimos 14 días de la ventana de historia -- suficientes para una
+    # sparkline legible sin saturarla de puntos.
+    resumen["serie_reciente"] = serie[-14:]
+    return resumen
+
+
 def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
                                  sucursal: str | None = None) -> list[dict]:
     """Producción de Panadería (unidades) DÍA por día, para la página

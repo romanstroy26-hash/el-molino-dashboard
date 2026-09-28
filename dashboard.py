@@ -302,6 +302,11 @@ def _cache_resumen_dia(_engine, fecha, sucursal):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_resumen_dia_con_tipico(_engine, fecha, sucursal):
+    return metrics.resumen_dia_con_tipico(_engine, fecha, sucursal=sucursal)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_coffee_keywords(_engine, solo_activas):
     return get_coffee_keywords(_engine, solo_activas=solo_activas)
 
@@ -691,6 +696,18 @@ def _panel_semana_vs_semana_pasada(datos: dict) -> None:
         )
 
 
+def _sparkline(df: pd.DataFrame, campo: str, color: str) -> alt.Chart:
+    """Mini-tendencia sin ejes ni etiquetas -- solo la FORMA de los
+    últimos días (ver resumen_dia_con_tipico -- serie_reciente), para que
+    un número suelto en una tarjeta ("54.5%") se pueda leer también como
+    "¿viene subiendo o bajando?" de un vistazo, sin abrir otra página."""
+    return alt.Chart(df).mark_line(color=color, strokeWidth=2, point=False).encode(
+        x=alt.X("fecha:T", axis=None),
+        y=alt.Y(f"{campo}:Q", axis=None, scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip("fecha:T", title="Дата"), alt.Tooltip(f"{campo}:Q", title="Значение")],
+    ).properties(height=40)
+
+
 # =============================================================================
 # Страница "Главная" -- как прошёл последний день, без единого клика
 # =============================================================================
@@ -726,8 +743,21 @@ def page_home():
         "День", fechas, index=len(fechas) - 1, key="home_fecha"
     )
 
-    resumen = _cache_resumen_dia(engine, fecha_elegida, sucursal_filtro)
+    resumen = _cache_resumen_dia_con_tipico(engine, fecha_elegida, sucursal_filtro)
     comparacion = _cache_comparacion_semanal(engine, fecha_elegida, sucursal_filtro)
+
+    # Сравнение с "типичным {день недели}" честно только для ЗАКРЫТОГО
+    # дня -- для открытого это была бы выручка за ПОЛДНЯ против типичной
+    # выручки за ПОЛНЫЙ день (то есть всегда "-80%", даже в отличный
+    # день). Та же ловушка, что уже решена для окон "День к дню"/"Неделя
+    # к неделе" справа -- здесь просто гасим цифры сравнения тем же
+    # способом, а не повторяем проверку в каждом месте по отдельности.
+    if not resumen["dia_cerrado"]:
+        resumen["ventas_vs_tipico_pct"] = None
+        resumen["cheque_vs_tipico_pct"] = None
+        for cat in resumen["categorias"]:
+            cat["tipico_pct"] = None
+            cat["dif_pt"] = None
 
     # Заголовок -- ОДНОЙ строкой: точка (или "Todos El Molino", если все
     # точки вместе) - дата без года - день недели. Без отдельной строки
@@ -757,19 +787,67 @@ def page_home():
     with datos_col:
         fila1 = st.columns(3)
         fila1[0].metric("Продажи", f"{resumen['num_ordenes']:,}")
-        fila1[1].metric("Выручка", f"{resumen['ventas_totales']:,.0f} $")
-        fila1[2].metric("Ср. чек", f"{resumen['cheque_promedio']:,.0f} $")
+
+        # "Типично для {день недели}" -- взвешенное среднее по тем же дням
+        # недели за последние 90 дней (metrics.resumen_dia_con_tipico),
+        # тот же метод, что и остальные прогнозы в этом файле. Без этого
+        # цифра дня читается сама по себе -- непонятно, много это или мало
+        # ИМЕННО для {день недели}, а не в среднем по всем дням сразу.
+        fila1[1].metric(
+            "Выручка", f"{resumen['ventas_totales']:,.0f} $",
+            delta=(f"{resumen['ventas_vs_tipico_pct']:+.1f}% к типичному {resumen['dia_semana']}"
+                   if resumen.get("ventas_vs_tipico_pct") is not None else None),
+        )
+        if resumen.get("tipico_ventas_totales") is not None:
+            fila1[1].caption(f"обычно ~{resumen['tipico_ventas_totales']:,.0f} $")
+
+        fila1[2].metric(
+            "Ср. чек", f"{resumen['cheque_promedio']:,.0f} $",
+            delta=(f"{resumen['cheque_vs_tipico_pct']:+.1f}% к типичному {resumen['dia_semana']}"
+                   if resumen.get("cheque_vs_tipico_pct") is not None else None),
+        )
+        if resumen.get("tipico_cheque_promedio") is not None:
+            fila1[2].caption(f"обычно ~{resumen['tipico_cheque_promedio']:,.0f} $")
+
+        serie_reciente = resumen.get("serie_reciente") or []
+        if len(serie_reciente) >= 3:
+            df_spark = pd.DataFrame(serie_reciente)
+            fila1[1].altair_chart(
+                _sparkline(df_spark, "ventas_totales", COLOR_PRIMARIO),
+                width="stretch", key="spark_ventas",
+            )
+            fila1[2].altair_chart(
+                _sparkline(df_spark, "cheque_promedio", COLOR_SECUNDARIO),
+                width="stretch", key="spark_cheque",
+            )
+            fila1[1].caption("последние 14 дней")
+            fila1[2].caption("последние 14 дней")
 
         fila2 = st.columns(len(resumen["categorias"]))
         for col, cat in zip(fila2, resumen["categorias"]):
-            # Без "delta" -- это не сравнение с прошлой датой, а просто
-            # сумма за эту категорию за тот же день. Раньше сумма стояла
-            # третьим параметром st.metric(), а это как раз "дельта" --
-            # Streamlit сам рисует стрелочку и красит в зелёный при
-            # положительном числе, что выглядело как "рост", хотя
-            # сравнивать было не с чем.
+            # Без "delta" именно здесь -- у категории нет "хорошо/плохо":
+            # больше Panadería не значит лучше или хуже, просто другой
+            # состав продаж. Streamlit красит delta зелёным/красным по
+            # знаку, что выглядело бы как оценка, поэтому "типично" -- в
+            # обычном тексте, без цвета и стрелки (тот же выбор, что и
+            # раньше для этих карточек, теперь просто с добавленным
+            # ориентиром).
             col.metric(cat["categoria"], f"{cat['pct']:.1f}%")
-            col.caption(f"{cat['monto']:,.0f} $")
+            tipico_txt = (
+                f", обычно {cat['tipico_pct']:.1f}% ({cat['dif_pt']:+.1f} пт)"
+                if cat.get("tipico_pct") is not None else ""
+            )
+            col.caption(f"{cat['monto']:,.0f} $" + tipico_txt)
+            if len(serie_reciente) >= 3:
+                campo = {
+                    "Panadería": "panaderia_pct", "Pastelería": "pasteleria_pct",
+                    "Café": "cafe_pct", "Остальное": "otras_pct",
+                }.get(cat["categoria"])
+                if campo:
+                    col.altair_chart(
+                        _sparkline(df_spark, campo, COLOR_TIPICO),
+                        width="stretch", key=f"spark_{cat['categoria']}",
+                    )
 
     with cmp1_col:
         _panel_dia_vs_semana_pasada(comparacion["dia_vs_semana_pasada"])
