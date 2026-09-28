@@ -51,6 +51,7 @@ function cashierRequest(path, options) { return staffFetch(path, options); }
 function showStaffLogin() {
   staffSession = ""; staffUser = null;
   sessionStorage.removeItem("el-molino-staff-session");
+  setMessage("staff-login-message", "");
   byId("staff-login").hidden = false;
   byId("staff-account").hidden = true;
   document.querySelector(".staff-tabs").hidden = true;
