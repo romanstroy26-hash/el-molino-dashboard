@@ -13,10 +13,9 @@
       .brand-mark{display:inline-grid;place-items:center;width:44px;height:44px;flex:none;border-radius:50%;background:#e7eddd;color:#173d33}
       .brand-mark svg{display:block;width:26px;height:26px}
       .brand-wordmark strong,.brand-wordmark small{display:block}
-      .staff-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
-      .staff-grid>div{min-width:0}.card{padding:26px;margin-bottom:20px;border:1px solid #e3e7dc;border-radius:18px;background:#fffdf8}
+      .staff-workspace{max-width:800px;margin:auto}.staff-workspace>div{min-width:0}.card{padding:26px;margin-bottom:20px;border:1px solid #e3e7dc;border-radius:18px;background:#fffdf8}
       input,select,textarea{max-width:100%}
-      @media(max-width:720px){.staff-grid{grid-template-columns:1fr}.staff-shell{padding:16px}}
+      @media(max-width:720px){.staff-shell{padding:16px}}
     </style>
     <link rel="stylesheet" href="./styles.css">
     <link rel="stylesheet" href="./staff.css">
@@ -26,12 +25,14 @@
     <main class="staff-shell">
       <header class="staff-header site-header"><div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M33 8c-14 5-23 17-21 31 2 13 15 21 28 16 13-5 20-18 15-31C50 11 41 7 33 8Z" fill="currentColor"/><path d="M46 13c-4 7-6 13-15 19-9 6-13 11-13 18" fill="none" stroke="#f8f2e6" stroke-width="3" stroke-linecap="round"/></svg></span><span class="brand-wordmark"><strong>EL MOLINO</strong><small>PANEL DEL EQUIPO</small></span></div><a href="./index.html">Ir al Club <span aria-hidden="true">↗</span></a></header>
       <div class="staff-intro"><div><p class="eyebrow">OPERACIÓN DIARIA</p><h1>Panel del equipo<span class="welcome-dot">.</span></h1><p class="muted">Caja y gerencia, cada una con sus herramientas en un solo lugar.</p></div><div class="staff-intro-mark" aria-hidden="true">EM<br>·</div></div>
-      <nav class="staff-jump" aria-label="Áreas del panel"><a href="#cashier-section">Caja y clientes</a><a href="#purchase-section">Registrar ticket</a><a href="#redemption-section">Entregar reward</a><a href="#manager-section">Gerencia</a></nav>
-      <p class="staff-security">Usa la clave de tu función. Se mantiene en esta página mientras esté abierta.</p>
+      <nav class="staff-tabs" aria-label="Área de trabajo"><button type="button" class="active" data-staff-view="cashier-view" aria-pressed="true">Caja</button><button type="button" data-staff-view="manager-view" aria-pressed="false">Gerencia</button></nav>
+      <p class="staff-security">La clave de acceso se conserva solo mientras esta página esté abierta.</p>
       <p id="staff-file-notice" class="staff-file-notice" hidden>Vista previa. Para usar caja y gerencia, abre <strong>Club.bat</strong> y entra en <strong>http://127.0.0.1:8000/staff.html</strong>.</p>
 
-      <section class="staff-grid">
-        <div>
+      <div class="staff-workspace">
+        <div id="cashier-view" class="staff-view">
+          <nav class="cashier-tabs" aria-label="Tareas de caja"><button type="button" class="active" data-cashier-view="cashier-workflow" aria-pressed="true">Clientes y tickets</button><button type="button" data-cashier-view="redemption-section" aria-pressed="false">Entregar recompensa</button></nav>
+          <div id="cashier-workflow">
           <section id="cashier-section" class="card">
             <p class="eyebrow">01 · ATENCIÓN AL CLIENTE</p><h2>Caja</h2>
             <label for="cashier-key">Clave de caja</label><input id="cashier-key" type="password" autocomplete="off">
@@ -73,25 +74,27 @@
             <p class="muted">Revisa que el total coincida con el ticket antes de registrarlo.</p>
             <p id="purchase-message" class="message" role="status"></p>
           </section>
-          <section id="redemption-section" class="card">
-            <p class="eyebrow">BENEFICIOS DEL CLUB</p><h2>Entregar reward</h2>
+          </div>
+          <section id="redemption-section" class="card" hidden>
+            <p class="eyebrow">BENEFICIOS DEL CLUB</p><h2>Entregar recompensa</h2>
             <form id="redemption-form"><label for="redemption-code">Código de canje del cliente</label><input id="redemption-code" required><button>Verificar código</button></form>
             <p id="redemption-message" class="message" role="status"></p>
             <div id="redemption-details" hidden><strong id="redemption-reward"></strong><p><span id="redemption-customer"></span> · <span id="redemption-status"></span></p><button id="fulfill-redemption" type="button">Confirmar entrega</button></div>
           </section>
         </div>
 
-        <div>
+        <div id="manager-view" class="staff-view" hidden>
+          <section class="manager-access card"><p class="eyebrow">HERRAMIENTAS DE GERENCIA</p><h2>Gerencia</h2><label for="admin-key">Clave de gerencia</label><input id="admin-key" type="password" autocomplete="off"></section>
+          <nav class="manager-tabs" aria-label="Herramientas de gerencia"><button type="button" class="active" data-manager-view="manager-section" aria-pressed="true">Clientes</button><button type="button" data-manager-view="reconciliation-section" aria-pressed="false">Tickets</button><button type="button" data-manager-view="rewards-section" aria-pressed="false">Recompensas</button><button type="button" data-manager-view="campaigns-section" aria-pressed="false">Campañas</button></nav>
           <section id="manager-section" class="card">
-            <p class="eyebrow">02 · CONOCE A TUS CLIENTES</p><h2>Gerencia</h2>
-            <label for="admin-key">Clave de gerencia</label><input id="admin-key" type="password" autocomplete="off">
+            <p class="eyebrow">CONOCE A TUS CLIENTES</p><h2>Clientes</h2>
             <label for="segment">Segmento</label><select id="segment"><option value="new">Nuevos</option><option value="active">Activos</option><option value="loyal">Frecuentes</option><option value="at_risk">En riesgo</option></select>
             <button id="load-audience" type="button">Ver audiencia</button>
             <button id="load-actions" type="button" class="secondary">Ver recomendaciones</button>
             <p id="manager-message" class="message" role="status"></p>
             <div id="manager-results" class="staff-results"></div>
           </section>
-          <section id="reconciliation-section" class="card">
+          <section id="reconciliation-section" class="card" hidden>
             <p class="eyebrow">CONTROL DE PUNTOS</p><h2>Revisión de tickets</h2>
             <p class="muted">Compara los últimos 50 tickets acreditados con las ventas cargadas desde Wansoft. Solo muestra diferencias; no modifica puntos.</p>
             <button id="load-reconciliation" type="button">Revisar tickets</button>
@@ -109,25 +112,24 @@
             </div>
             <div id="reconciliation-results" class="staff-results"></div>
           </section>
-          <section class="card">
-            <p class="eyebrow">RECOMPENSAS</p><h2>Nuevo reward</h2>
-            <form id="reward-form"><label for="reward-name">Nombre</label><input id="reward-name" required><label for="reward-cost">Costo en puntos</label><input id="reward-cost" type="number" min="1" step="1" required><button>Crear reward</button></form>
+          <section id="rewards-section" class="card" hidden>
+            <p class="eyebrow">RECOMPENSAS</p><h2>Nueva recompensa</h2>
+            <form id="reward-form"><label for="reward-name">Nombre</label><input id="reward-name" required><label for="reward-cost">Costo en puntos</label><input id="reward-cost" type="number" min="1" step="1" required><button>Crear recompensa</button></form>
             <p id="reward-message" class="message" role="status"></p>
           </section>
-          <section class="card">
+          <section id="campaigns-section" class="card" hidden>
             <p class="eyebrow">COMUNICACIÓN</p><h2>Campaña por segmento</h2>
-            <form id="campaign-form"><label for="campaign-name">Nombre</label><input id="campaign-name" required><label for="campaign-channel">Canal</label><select id="campaign-channel"><option value="push">Club</option><option value="sms">SMS y Club</option><option value="email">Email (solo en Club)</option></select><label for="campaign-text">Mensaje</label><textarea id="campaign-text" rows="3" required></textarea><button>Crear borrador</button></form>
+            <form id="campaign-form"><label for="campaign-name">Nombre</label><input id="campaign-name" required><label for="campaign-segment">Segmento</label><select id="campaign-segment"><option value="new">Nuevos</option><option value="active">Activos</option><option value="loyal">Frecuentes</option><option value="at_risk">En riesgo</option></select><label for="campaign-channel">Canal</label><select id="campaign-channel"><option value="push">Club</option><option value="sms">SMS y Club</option><option value="email">Email (solo en Club)</option></select><label for="campaign-text">Mensaje</label><textarea id="campaign-text" rows="3" required></textarea><button>Crear borrador</button></form>
             <p class="muted">Activar una campaña la muestra en el Club. Si eliges SMS, el envío se inicia después, por separado, y puede generar cargos.</p>
             <p id="campaign-message" class="message" role="status"></p>
-          </section>
-          <section class="card">
-            <p class="eyebrow">RESULTADOS</p><h2>Campañas</h2>
+            <div class="campaign-list-section"><h3>Campañas creadas</h3>
             <button id="load-campaigns" type="button">Actualizar lista</button>
             <p id="campaign-list-message" class="message" role="status"></p>
             <div id="campaign-list" class="staff-results"></div>
+            </div>
           </section>
         </div>
-      </section>
+      </div>
     </main>
   </body>
 </html>
