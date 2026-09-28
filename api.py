@@ -32,6 +32,7 @@ from customer_service import (
     create_campaign_for_segment,
     list_campaigns,
     preview_campaign,
+    dispatch_sms_campaign,
     activate_campaign,
     create_reward,
     create_login_challenge,
@@ -62,7 +63,7 @@ from customer_service import (
 )
 from db import get_engine
 from phone_numbers import mexican_sms_number
-from sms_provider import SmsDeliveryError, sender_from_env
+from sms_provider import SmsDeliveryError, message_sender_from_env, sender_from_env
 from wansoft_loyalty import WansoftTicketError, list_wansoft_reconciliation, read_wansoft_ticket
 
 
@@ -234,6 +235,17 @@ class CampaignPreviewOut(APIModel):
     ends_at: datetime | None = None
     eligible_count: int
     excluded_count: int
+    pending_sms_count: int
+    sent_sms_count: int
+    uncertain_sms_count: int
+    invalid_phone_count: int
+
+
+class CampaignDispatchOut(APIModel):
+    sent: int
+    uncertain: int
+    invalid_phone: int
+    remaining: int
 
 
 class CampaignInteraction(RequestModel):
@@ -433,7 +445,7 @@ def _validate_production_config() -> None:
         raise RuntimeError("Missing production settings: " + ", ".join(missing))
 
 
-def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], None] | None = None, expose_debug_code: bool = False, token_secret: str | None = None, admin_api_key: str | None = None, cashier_api_key: str | None = None) -> FastAPI:
+def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], None] | None = None, expose_debug_code: bool = False, token_secret: str | None = None, admin_api_key: str | None = None, cashier_api_key: str | None = None, campaign_sender: Callable[[str, str], None] | None = None) -> FastAPI:
     """Build an app.  Passing an engine keeps API tests isolated from config."""
     _validate_production_config()
     app = FastAPI(title="El Molino Customer API", version="1.0.0")
@@ -441,6 +453,7 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
     app.state.token_secret = (token_secret or os.getenv("AUTH_TOKEN_SECRET") or secrets.token_urlsafe(48)).encode()
     app.state.admin_api_key = admin_api_key or os.getenv("ADMIN_API_KEY")
     app.state.cashier_api_key = cashier_api_key or os.getenv("CASHIER_API_KEY")
+    app.state.campaign_sender = campaign_sender or (message_sender_from_env() if engine is None and not expose_debug_code else None)
     labsmobile_enabled = otp_sender is None and not expose_debug_code
     if labsmobile_enabled:
         otp_sender = sender_from_env()
@@ -701,6 +714,15 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
     def read_campaign_preview(campaign_id: str, _: None = Depends(require_admin)) -> dict:
         try:
             return preview_campaign(app.state.engine, campaign_id)
+        except CustomerError as error:
+            raise _error_to_http(error) from error
+
+    @app.post("/admin/campaigns/{campaign_id}/send-sms", response_model=CampaignDispatchOut)
+    def send_campaign_sms(campaign_id: str, limit: int = Query(5, ge=1, le=5), _: None = Depends(require_admin)) -> dict:
+        if not app.state.campaign_sender:
+            raise HTTPException(status_code=503, detail="El envío de SMS no está configurado")
+        try:
+            return dispatch_sms_campaign(app.state.engine, campaign_id, app.state.campaign_sender, limit)
         except CustomerError as error:
             raise _error_to_http(error) from error
 
