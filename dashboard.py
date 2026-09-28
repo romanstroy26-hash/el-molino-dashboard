@@ -88,8 +88,8 @@ COLOR_FRAPPE = "#7C5CBF"
 COLOR_TIPICO = "#5F6E67"
 _TEMA_GRAFICO = {
     "light": {
-        "fact": "#B07E22", "texto_pico": "#241C10", "fondo": "#FBF8F2",
-        "eje_linea": "#D8CFBE", "eje_etiqueta": "#5B5140", "grid": "#EAE4D6",
+        "fact": "#B07E22", "texto_pico": "#000000", "fondo": "#FBF8F2",
+        "eje_linea": "#D8CFBE", "eje_etiqueta": "#000000", "grid": "#EAE4D6",
     },
     "dark": {
         "fact": "#B07E22", "texto_pico": "#F3EAD9", "fondo": "#16211D",
@@ -120,8 +120,9 @@ st.set_page_config(page_title="El Molino -- доля кофе", layout="wide")
 # (сама тема даёт фон/текст/акцент -- этого достаточно для 90% страницы;
 # здесь только скругления и тёплая рамка у карточек-контейнеров -- окна
 # сравнения на "Главной", раскрывающиеся таблицы -- чтобы они выглядели
-# карточками, а не просто линией по краю, плюс акцентный (золотой) цвет
-# у цифр KPI, чтобы они сразу цеплялись взглядом на любой странице).
+# карточками, а не просто линией по краю, плюс чёрный цвет у цифр KPI
+# (по умолчанию Streamlit красит их акцентным золотым -- Роман попросил
+# чёрным, как весь остальной текст).
 st.markdown(
     """
     <style>
@@ -133,7 +134,7 @@ st.markdown(
         border-color: rgba(176, 126, 34, 0.35) !important;
     }
     [data-testid="stMetricValue"] {
-        color: #B07E22;
+        color: #000000;
     }
     </style>
     """,
