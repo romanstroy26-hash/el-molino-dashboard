@@ -25,6 +25,11 @@ Las variables `DATABASE_URL`, `AUTH_TOKEN_SECRET`, `ADMIN_API_KEY`,
 entorno de Render. No copies sus valores a GitHub ni al chat. Para una prueba
 de SMS, usa únicamente un número propio.
 
+El panel `/staff.html` ahora usa cuentas personales. La primera cuenta se crea
+con `ADMIN_API_KEY` mediante «Crear la cuenta principal»; después ese secreto
+solo sirve para recuperar el código principal. Los accesos diarios usan códigos
+personales creados en «Gerencia → Equipo», con permisos y registro de acciones.
+
 El plan gratuito de Render suspende el servicio tras un periodo de inactividad.
 Para operación diaria con inicio de sesión por SMS, cambia el plan a uno que
 mantenga el servicio activo. No guardes clientes ni ventas en el sistema de
