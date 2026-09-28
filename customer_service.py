@@ -384,6 +384,28 @@ def list_campaigns(engine: Engine) -> list[dict]:
         ).scalar_one())} for row in rows]
 
 
+def preview_campaign(engine: Engine, campaign_id: str) -> dict:
+    """Show campaign content and current consent before manager activation."""
+    with engine.connect() as conn:
+        campaign = conn.execute(select(campaigns).where(campaigns.c.id == campaign_id)).mappings().first()
+        if not campaign:
+            raise CustomerError("La campaña no existe")
+        assigned = conn.execute(select(func.count()).select_from(campaign_recipients).where(
+            campaign_recipients.c.campaign_id == campaign_id,
+        )).scalar_one()
+        eligible = conn.execute(select(func.count()).select_from(
+            campaign_recipients.join(customers, customers.c.id == campaign_recipients.c.customer_id)
+        ).where(
+            campaign_recipients.c.campaign_id == campaign_id,
+            customers.c.status == "active",
+            customers.c.marketing_consent.is_(True),
+        )).scalar_one()
+    return {"id": campaign_id, "name": campaign["name"], "channel": campaign["channel"],
+            "message": campaign["message"], "status": campaign["status"],
+            "starts_at": campaign["starts_at"], "ends_at": campaign["ends_at"],
+            "eligible_count": int(eligible), "excluded_count": int(assigned - eligible)}
+
+
 def list_customer_campaigns(engine: Engine, customer_id: str) -> list[dict]:
     """Return campaigns assigned to a customer and currently visible in their app."""
     now = _now()
