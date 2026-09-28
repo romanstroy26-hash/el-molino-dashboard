@@ -99,7 +99,9 @@ input:focus,select:focus,textarea:focus{border-color:var(--teal);outline:3px sol
 .customer-page .purchase,.customer-page .reward,.customer-page .profile{background:var(--paper);border-color:#e2d3bd;color:var(--ink);box-shadow:0 9px 26px #061c1766}
 .customer-page .purchase h3,.customer-page .reward h3,.customer-page .profile h2{color:var(--forest)}
 .customer-page .purchase-heading strong,.customer-page .reward strong{color:var(--clay)}
-.customer-page .purchase-products,.customer-page .purchases,.customer-page .reward p,.customer-page .profile .muted{color:var(--muted-ink)}
+.customer-page .purchase-products,.customer-page .reward p,.customer-page .profile .muted{color:var(--muted-ink)}
+.customer-page .purchases,.customer-page #club-view>.message,.customer-page #rewards-message{color:#c8d9c0}
+.customer-page .profile .message{color:#376f53}
 .customer-page .purchase-points{background:#dce9cf;color:var(--forest)}
 .customer-page .reward:nth-child(3n+2){background:#d4dfc7;border-color:#c3d0b3}
 .customer-page .reward:nth-child(3n+3){background:#ecd0ad;border-color:#e1bd97}
@@ -107,8 +109,11 @@ input:focus,select:focus,textarea:focus{border-color:var(--teal);outline:3px sol
 .customer-page .reward button:hover:not(:disabled){background:#935c45}
 .customer-page .reward button:disabled{background:#c5c9b9;color:#506153}
 .customer-page .campaign{background:#9daf86;border-color:#bacc9e;color:var(--forest-deep);box-shadow:0 9px 26px #061c1766}
+.customer-page .campaign p:not(.eyebrow){color:#254839}
+.customer-page .campaign .eyebrow{color:#734a38}
 .customer-page .campaign:nth-child(even){background:#b88970;border-color:#cba28c;color:#fff9e8}
 .customer-page .campaign:nth-child(even) p:not(.eyebrow),.customer-page .campaign:nth-child(even) h3{color:#fff9e8}
+.customer-page .campaign:nth-child(even) .eyebrow{color:#ffe1bd}
 .customer-page .campaign button{background:var(--forest)}
 .customer-page .profile label{color:#355643}
 
@@ -160,6 +165,7 @@ body.staff-page{background:radial-gradient(ellipse at 9% 0,#39786277 0,transpare
 .staff-page .staff-workspace .overview-grid button:hover{filter:brightness(1.09);transform:translateY(-2px)}
 .staff-page .overview-grid button span,.staff-page .overview-grid button small,.staff-page .overview-grid button small span{color:inherit;opacity:.82}
 .staff-page .reward-editor,.staff-page .staff-workspace .manager-access,.staff-page .staff-result,.staff-page .purchase-item,.staff-page .cashier-purchase,.staff-page #cashier-customer,.staff-page #redemption-details{background:#e4ead8;border-color:#cad7bf;color:var(--ink)}
+.staff-page .staff-result p,.staff-page .cashier-purchase p{color:#4d6655}
 .staff-page .reward-card,.staff-page .campaign-preview,.staff-page .campaign-audit{background:#fff9ed;border-color:#e2d1b8;color:var(--ink)}
 .staff-page .reward-card h4{color:var(--forest)}
 .staff-page .reward-state.is-active{background:#d3e6c7;color:#1d5d3b}
