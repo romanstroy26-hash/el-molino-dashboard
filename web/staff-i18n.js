@@ -112,6 +112,7 @@
     "Activa": ["Активна", "Active"],
     "Pausada": ["Приостановлена", "Paused"],
     "Costo": ["Стоимость", "Cost"],
+    "Costo:": ["Стоимость:", "Cost:"],
     "Editar": ["Изменить", "Edit"],
     "Pausar": ["Приостановить", "Pause"],
     "Guardar cambios": ["Сохранить изменения", "Save changes"],
