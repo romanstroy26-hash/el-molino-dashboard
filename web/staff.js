@@ -1,6 +1,8 @@
 let selectedCustomer = null;
 let inspectedRedemption = null;
 let loadedWansoftTicketId = null;
+let staffSession = sessionStorage.getItem("el-molino-staff-session") || "";
+let staffUser = null;
 const byId = (id) => document.getElementById(id);
 if (location.protocol === "file:") byId("staff-file-notice").hidden = false;
 
@@ -28,13 +30,11 @@ function setMessage(id, value, error = false) {
   element.classList.toggle("error", error);
 }
 
-async function apiRequest(path, keyId, keyHeader, options = {}) {
-  const key = byId(keyId).value.trim();
-  if (!key) throw new Error("Introduce la clave correspondiente.");
+async function staffFetch(path, options = {}) {
   const response = await fetch(path, {
     ...options,
     cache: "no-store",
-    headers: { "Content-Type": "application/json", [keyHeader]: key },
+    headers: { "Content-Type": "application/json", ...(staffSession ? { "X-Staff-Session": staffSession } : {}), ...(options.headers || {}) },
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -45,8 +45,98 @@ async function apiRequest(path, keyId, keyHeader, options = {}) {
   return data;
 }
 
-function managerRequest(path, options) { return apiRequest(path, "admin-key", "X-Admin-Key", options); }
-function cashierRequest(path, options) { return apiRequest(path, "cashier-key", "X-Cashier-Key", options); }
+function managerRequest(path, options) { return staffFetch(path, options); }
+function cashierRequest(path, options) { return staffFetch(path, options); }
+
+function showStaffLogin() {
+  staffSession = ""; staffUser = null;
+  sessionStorage.removeItem("el-molino-staff-session");
+  byId("staff-login").hidden = false;
+  byId("staff-account").hidden = true;
+  document.querySelector(".staff-tabs").hidden = true;
+  document.querySelector(".staff-workspace").hidden = true;
+}
+
+function showStaffWorkspace(user) {
+  staffUser = user;
+  byId("staff-login").hidden = true;
+  byId("staff-account").hidden = false;
+  byId("staff-account-name").textContent = user.full_name;
+  document.querySelector(".staff-tabs").hidden = false;
+  document.querySelector(".staff-workspace").hidden = false;
+  const cashierAllowed = user.is_owner || user.permissions.includes("cashier");
+  document.querySelector('[data-staff-view="cashier-view"]').hidden = !cashierAllowed;
+  const managerButtons = [...document.querySelectorAll("[data-manager-view]")];
+  managerButtons.forEach((button) => { button.hidden = !(user.is_owner || user.permissions.includes(button.dataset.permission)); });
+  const managerAllowed = managerButtons.some((button) => !button.hidden);
+  document.querySelector('[data-staff-view="manager-view"]').hidden = !managerAllowed;
+  if (managerAllowed) switchView("[data-manager-view]", "managerView", managerButtons.find((button) => !button.hidden).dataset.managerView);
+  switchView("[data-staff-view]", "staffView", cashierAllowed ? "cashier-view" : "manager-view");
+  if (user.is_owner) loadTeam();
+}
+
+byId("staff-login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setMessage("staff-login-message", "Entrando…");
+  try {
+    const response = await staffFetch("/staff/login", { method: "POST", body: JSON.stringify({ code: byId("staff-code").value.trim() }) });
+    staffSession = response.session;
+    sessionStorage.setItem("el-molino-staff-session", staffSession);
+    byId("staff-code").value = "";
+    showStaffWorkspace(response.user);
+  } catch (error) { setMessage("staff-login-message", error.message, true); }
+});
+
+byId("staff-bootstrap-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const response = await staffFetch("/staff/bootstrap", { method: "POST", headers: { "X-Admin-Key": byId("owner-key").value.trim() },
+      body: JSON.stringify({ full_name: byId("owner-name").value.trim(), permissions: [] }) });
+    const box = byId("bootstrap-code-box");
+    box.replaceChildren();
+    const label = document.createElement("p"); label.textContent = "Tu código principal. Guárdalo ahora; no se volverá a mostrar.";
+    const code = document.createElement("strong"); code.textContent = response.code;
+    box.append(label, code); box.hidden = false;
+    byId("staff-code").value = response.code;
+    byId("staff-bootstrap").hidden = true;
+    byId("owner-key").value = "";
+    setMessage("staff-login-message", "Cuenta creada. Guarda el código y pulsa Entrar.");
+  } catch (error) { setMessage("staff-login-message", error.message, true); }
+});
+
+byId("staff-recovery-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const response = await staffFetch("/staff/recover-owner", { method: "POST", headers: { "X-Admin-Key": byId("recovery-key").value.trim() } });
+    const box = byId("bootstrap-code-box"); box.replaceChildren();
+    const label = document.createElement("p"); label.textContent = "Nuevo código principal. El anterior ya no sirve; guarda este código ahora.";
+    const code = document.createElement("strong"); code.textContent = response.code;
+    box.append(label, code); box.hidden = false;
+    byId("staff-code").value = response.code;
+    byId("recovery-key").value = "";
+    byId("staff-recovery").open = false;
+    setMessage("staff-login-message", "Código nuevo listo. Guárdalo y pulsa Entrar.");
+  } catch (error) { setMessage("staff-login-message", error.message, true); }
+});
+
+byId("staff-logout").addEventListener("click", async () => {
+  try { await staffFetch("/staff/logout", { method: "POST" }); } catch (_) { /* Local sign-out still applies. */ }
+  showStaffLogin();
+});
+
+async function initializeStaff() {
+  try {
+    const setup = await staffFetch("/staff/setup");
+    byId("staff-bootstrap").hidden = setup.owner_exists;
+    byId("staff-recovery").hidden = !setup.owner_exists;
+    if (staffSession) showStaffWorkspace(await staffFetch("/staff/me"));
+    else showStaffLogin();
+  } catch (error) {
+    showStaffLogin();
+    setMessage("staff-login-message", error.message, true);
+  }
+}
+initializeStaff();
 function setSelectedCustomer(customer) {
   selectedCustomer = customer;
   resetWansoftPreview();
@@ -552,3 +642,109 @@ async function loadCampaigns() {
   } catch (error) { setMessage("campaign-list-message", error.message, true); }
 }
 byId("load-campaigns").addEventListener("click", loadCampaigns);
+
+const permissionNames = { cashier: "Caja y tickets", analytics: "Analítica", rewards: "Recompensas", campaigns: "Campañas" };
+const allPermissions = Object.keys(permissionNames);
+const actionNames = {
+  "GET /cashier/customers": "Buscó cliente",
+  "GET /cashier/customers/{customer_id}/purchases": "Consultó compras",
+  "GET /cashier/wansoft-tickets/{ticket_id}": "Buscó ticket Wansoft",
+  "POST /cashier/customers/{customer_id}/wansoft-tickets/{ticket_id}": "Asignó ticket y puntos",
+  "POST /customers": "Registró cliente",
+  "POST /customers/{customer_id}/purchases": "Registró compra",
+  "GET /cashier/redemptions/{redemption_id}": "Consultó canje",
+  "POST /cashier/redemptions/{redemption_id}/fulfill": "Entregó recompensa",
+  "GET /admin/audiences": "Consultó audiencia",
+  "GET /admin/wansoft-reconciliation": "Revisó tickets",
+  "POST /admin/rewards": "Creó recompensa",
+  "POST /admin/campaigns/by-segment": "Creó campaña",
+  "POST /admin/campaigns/{campaign_id}/activate": "Activó campaña",
+  "POST /admin/campaigns/{campaign_id}/send-sms": "Envió campaña SMS",
+  "POST /staff/team": "Creó cuenta de empleado",
+  "PATCH /staff/team/{user_id}": "Cambió acceso de empleado",
+  "POST /staff/team/{user_id}/reset-code": "Cambió código de empleado",
+  login: "Entró al panel", logout: "Salió del panel",
+};
+
+function showNewStaffCode(name, code) {
+  const box = byId("team-code-box"); box.replaceChildren();
+  const label = document.createElement("p"); label.textContent = `Código personal de ${name}. Cópialo ahora; solo se muestra una vez.`;
+  const value = document.createElement("strong"); value.textContent = code;
+  box.append(label, value); box.hidden = false;
+}
+
+async function loadStaffActions() {
+  const list = byId("staff-actions"); list.replaceChildren();
+  try {
+    const rows = await staffFetch("/staff/actions");
+    if (!rows.length) { list.textContent = "Todavía no hay acciones."; return; }
+    rows.forEach((row) => {
+      const item = document.createElement("div"); item.className = "staff-result";
+      const title = document.createElement("strong"); title.textContent = row.full_name;
+      const detail = document.createElement("p");
+      detail.textContent = `${new Date(`${row.created_at}Z`).toLocaleString("es-MX")} · ${actionNames[row.action] || row.action}${row.target ? ` · ${row.target}` : ""}`;
+      item.append(title, detail); list.append(item);
+    });
+  } catch (error) { list.textContent = error.message; }
+}
+
+async function loadTeam() {
+  const list = byId("team-list"); list.replaceChildren();
+  try {
+    const users = await staffFetch("/staff/team");
+    users.forEach((user) => {
+      const card = document.createElement("article"); card.className = "staff-result team-member";
+      const title = document.createElement("strong"); title.textContent = `${user.full_name}${user.is_owner ? " · Principal" : ""}${user.active ? "" : " · Desactivado"}`;
+      card.append(title);
+      if (!user.is_owner) {
+        const choices = document.createElement("div"); choices.className = "team-choices";
+        allPermissions.forEach((permission) => {
+          const label = document.createElement("label");
+          const input = document.createElement("input"); input.type = "checkbox"; input.value = permission; input.checked = user.permissions.includes(permission);
+          label.append(input, document.createTextNode(` ${permissionNames[permission]}`)); choices.append(label);
+        });
+        const actions = document.createElement("div"); actions.className = "team-actions";
+        const save = document.createElement("button"); save.type = "button"; save.textContent = "Guardar permisos";
+        save.addEventListener("click", async () => {
+          try {
+            await staffFetch(`/staff/team/${user.id}`, { method: "PATCH", body: JSON.stringify({ permissions: [...choices.querySelectorAll("input:checked")].map((input) => input.value) }) });
+            setMessage("team-message", `Permisos guardados para ${user.full_name}.`);
+            await loadStaffActions();
+          } catch (error) { setMessage("team-message", error.message, true); }
+        });
+        const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "secondary";
+        toggle.textContent = user.active ? "Desactivar" : "Activar";
+        toggle.addEventListener("click", async () => {
+          try {
+            await staffFetch(`/staff/team/${user.id}`, { method: "PATCH", body: JSON.stringify({ active: !user.active }) });
+            await loadTeam(); await loadStaffActions();
+          } catch (error) { setMessage("team-message", error.message, true); }
+        });
+        const reset = document.createElement("button"); reset.type = "button"; reset.className = "secondary"; reset.textContent = "Nuevo código";
+        reset.addEventListener("click", async () => {
+          try {
+            const result = await staffFetch(`/staff/team/${user.id}/reset-code`, { method: "POST" });
+            showNewStaffCode(user.full_name, result.code); await loadStaffActions();
+          } catch (error) { setMessage("team-message", error.message, true); }
+        });
+        actions.append(save, toggle, reset); card.append(choices, actions);
+      }
+      list.append(card);
+    });
+    await loadStaffActions();
+  } catch (error) { setMessage("team-message", error.message, true); }
+}
+
+byId("team-create-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const fullName = byId("team-name").value.trim();
+    const permissions = [...byId("team-create-form").querySelectorAll('input[name="permission"]:checked')].map((input) => input.value);
+    const result = await staffFetch("/staff/team", { method: "POST", body: JSON.stringify({ full_name: fullName, permissions }) });
+    showNewStaffCode(fullName, result.code);
+    byId("team-create-form").reset();
+    setMessage("team-message", `Cuenta creada para ${fullName}.`);
+    await loadTeam();
+  } catch (error) { setMessage("team-message", error.message, true); }
+});
+byId("load-staff-actions").addEventListener("click", loadStaffActions);
