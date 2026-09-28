@@ -28,6 +28,14 @@ CAFETERIA_TIPOS = {"CAFETERIA", "FRAPPES"}
 # que "Напитки" cubra TODA bebida del menú, no solo CAFETERIA/FRAPPES.
 OTRAS_BEBIDAS_TIPOS = {"CAFETERIA", "REFRESCOS"}
 
+# Posiciones de PANADERIA que en realidad son empaque (bolsas), no
+# producto -- se venden a $0 y no consumen tiempo de horneado/decoración
+# de nadie. Cuentan como PANADERIA en tipo_grupo pero deben quedar FUERA
+# de cualquier análisis de esa categoría (unidades reales, pronóstico,
+# top de posiciones, personal por hora) -- si no, inflan las unidades sin
+# representar trabajo real.
+PANADERIA_EXCLUIR_SQL = " AND platillo NOT LIKE 'BOLSA%'"
+
 # "Сегодня" здесь НИКОГДА не берётся из часов компьютера -- только из
 # tiempo.hoy(), то есть по времени Сан-Луис-Потоси. Почему так и что
 # ломалось раньше -- подробно в шапке tiempo.py.
@@ -615,7 +623,7 @@ def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
     # para sumar en Python tardaba ~30s por el tráfico de red hacia la base
     # en la nube, contra <1s agregando del lado del servidor.
     sql = ("SELECT fecha, SUM(cantidad) AS total FROM sales_lines "
-           "WHERE tipo_grupo = 'PANADERIA'")
+           "WHERE tipo_grupo = 'PANADERIA'" + PANADERIA_EXCLUIR_SQL)
     params: dict = {}
     if sucursal:
         sql += " AND sucursal = :sucursal"
@@ -669,7 +677,7 @@ def top_platillos_panaderia(engine: Engine, sucursal: str | None = None,
     # líneas de Panadería, traerlas todas es ~30s de tráfico contra la
     # nube por nada (aquí solo hacen falta los totales por posición).
     sql = ("SELECT platillo, SUM(importe) AS ventas, SUM(cantidad) AS unidades "
-           "FROM sales_lines WHERE tipo_grupo = 'PANADERIA'")
+           "FROM sales_lines WHERE tipo_grupo = 'PANADERIA'" + PANADERIA_EXCLUIR_SQL)
     params: dict = {}
     if sucursal:
         sql += " AND sucursal = :sucursal"
@@ -717,7 +725,7 @@ def patron_horario_panaderia(engine: Engine, sucursal: str | None = None,
            "SUM(importe) AS ventas, SUM(cantidad) AS unidades "
            "FROM sales_lines "
            "WHERE tipo_grupo = 'PANADERIA' AND hora_cierre IS NOT NULL "
-           "AND hora_cierre != ''")
+           "AND hora_cierre != ''" + PANADERIA_EXCLUIR_SQL)
     params: dict = {}
     if sucursal:
         sql += " AND sucursal = :sucursal"
