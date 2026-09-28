@@ -334,6 +334,14 @@ def test_sms_campaign_sends_only_with_consent_and_never_repeats():
     assert client.post(f"/customers/{customers[0]['id']}/campaigns/{campaign['id']}/events",
                        json={"event_type": "opened"}, headers=customer_headers).status_code == 201
     assert client.get(f"/admin/campaigns/{campaign['id']}/preview", headers=headers).json()["sent_sms_count"] == 1
+    deliveries_path = f"/admin/campaigns/{campaign['id']}/deliveries"
+    assert client.get(deliveries_path).status_code == 401
+    report = client.get(deliveries_path, headers=headers).json()
+    assert report["total_count"] == 2
+    assert sorted(row["status"] for row in report["rows"]) == ["accepted", "excluded"]
+    assert all(row["phone_masked"].startswith("•••• ") for row in report["rows"])
+    assert "4443209681" not in str(report)
+    assert len(client.get(f"{deliveries_path}?limit=1&offset=1", headers=headers).json()["rows"]) == 1
     assert client.post(path, headers=headers).json()["sent"] == 0
     assert len(delivered) == 1
 
@@ -353,8 +361,24 @@ def test_sms_campaign_uncertain_attempt_is_not_automatically_retried():
     path = f"/admin/campaigns/{campaign['id']}/send-sms"
     assert client.post(path, headers=headers).json() == {"sent": 0, "uncertain": 1, "invalid_phone": 0, "remaining": 0}
     assert client.get(f"/admin/campaigns/{campaign['id']}/preview", headers=headers).json()["uncertain_sms_count"] == 1
+    assert client.get(f"/admin/campaigns/{campaign['id']}/deliveries", headers=headers).json()["rows"][0]["status"] == "uncertain"
     assert client.post(path, headers=headers).json()["uncertain"] == 0
     assert len(attempts) == 1
+
+
+def test_sms_campaign_reports_invalid_phone_without_calling_provider():
+    attempts = []
+    client = make_client(campaign_sender=lambda phone, message: attempts.append(phone))
+    headers = {"X-Admin-Key": "admin-test-key"}
+    customer = create_customer(client, marketing_consent=True)
+    campaign = client.post("/admin/campaigns", json={"name": "Invitación", "channel": "sms",
+        "message": "Ven por café", "customer_ids": [customer["id"]]}, headers=headers).json()
+    client.post(f"/admin/campaigns/{campaign['id']}/activate", headers=headers)
+    assert client.post(f"/admin/campaigns/{campaign['id']}/send-sms", headers=headers).json()["invalid_phone"] == 1
+    assert attempts == []
+    report = client.get(f"/admin/campaigns/{campaign['id']}/deliveries", headers=headers).json()
+    assert report["rows"][0]["status"] == "invalid_phone"
+    assert "555-123" not in str(report)
 
 
 def test_campaign_interactions_are_visible_in_analytics():
