@@ -14,7 +14,7 @@ from pathlib import Path
 from decimal import Decimal
 from typing import Annotated, Callable
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text as sql_text
@@ -66,6 +66,9 @@ from db import get_engine
 from phone_numbers import mexican_sms_number
 from sms_provider import SmsDeliveryError, message_sender_from_env, sender_from_env
 from wansoft_loyalty import WansoftTicketError, list_wansoft_reconciliation, read_wansoft_ticket
+from staff_auth import (PERMISSIONS, staff_metadata, owner_exists, create_user, login as staff_login,
+                        session_user, revoke_session, list_users, update_user, rotate_code, recover_owner_code,
+                        log_action, list_actions)
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +80,21 @@ class APIModel(BaseModel):
 
 class RequestModel(APIModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class StaffLogin(RequestModel):
+    code: str = Field(min_length=8, max_length=32)
+
+
+class StaffCreate(RequestModel):
+    full_name: str = Field(min_length=1, max_length=160)
+    permissions: list[str] = Field(default_factory=list)
+
+
+class StaffUpdate(RequestModel):
+    full_name: str | None = Field(default=None, min_length=1, max_length=160)
+    permissions: list[str] | None = None
+    active: bool | None = None
 
 
 class CustomerCreate(RequestModel):
@@ -464,6 +482,7 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
     _validate_production_config()
     app = FastAPI(title="El Molino Customer API", version="1.0.0")
     app.state.engine = engine or get_engine()
+    staff_metadata.create_all(app.state.engine)
     app.state.token_secret = (token_secret or os.getenv("AUTH_TOKEN_SECRET") or secrets.token_urlsafe(48)).encode()
     app.state.admin_api_key = admin_api_key or os.getenv("ADMIN_API_KEY")
     app.state.cashier_api_key = cashier_api_key or os.getenv("CASHIER_API_KEY")
@@ -493,17 +512,136 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
         if customer_id != session_customer_id:
             raise HTTPException(status_code=403, detail="No autorizado para este cliente")
 
-    def require_admin(x_admin_key: Annotated[str | None, Header()] = None) -> None:
-        if not app.state.admin_api_key:
-            raise HTTPException(status_code=503, detail="El acceso de administración no está configurado")
-        if not x_admin_key or not hmac.compare_digest(x_admin_key, app.state.admin_api_key):
-            raise HTTPException(status_code=401, detail="Acceso de administración no autorizado")
+    def staff_access(permission: str, session: str | None, legacy: str | None, expected: str | None) -> dict | None:
+        user = session_user(app.state.engine, session)
+        if user:
+            if user["is_owner"] or permission in user["permissions"]:
+                return user
+            raise HTTPException(status_code=403, detail="Tu cuenta no tiene permiso para esta acción")
+        if session:
+            raise HTTPException(status_code=401, detail="Sesión vencida. Vuelve a entrar")
+        # Existing keys work only until the first owner account is activated.
+        if not owner_exists(app.state.engine) and legacy and expected and hmac.compare_digest(legacy, expected):
+            return None
+        raise HTTPException(status_code=401, detail="Entra con tu código personal")
 
-    def require_cashier(x_cashier_key: Annotated[str | None, Header()] = None) -> None:
-        if not app.state.cashier_api_key:
-            raise HTTPException(status_code=503, detail="El acceso de caja no está configurado")
-        if not x_cashier_key or not hmac.compare_digest(x_cashier_key, app.state.cashier_api_key):
-            raise HTTPException(status_code=401, detail="Acceso de caja no autorizado")
+    def require_admin(x_staff_session: Annotated[str | None, Header()] = None,
+                      x_admin_key: Annotated[str | None, Header()] = None) -> dict | None:
+        return staff_access("analytics", x_staff_session, x_admin_key, app.state.admin_api_key)
+
+    def require_cashier(x_staff_session: Annotated[str | None, Header()] = None,
+                        x_cashier_key: Annotated[str | None, Header()] = None) -> dict | None:
+        return staff_access("cashier", x_staff_session, x_cashier_key, app.state.cashier_api_key)
+
+    def require_rewards(x_staff_session: Annotated[str | None, Header()] = None,
+                        x_admin_key: Annotated[str | None, Header()] = None) -> dict | None:
+        return staff_access("rewards", x_staff_session, x_admin_key, app.state.admin_api_key)
+
+    def require_campaigns(x_staff_session: Annotated[str | None, Header()] = None,
+                          x_admin_key: Annotated[str | None, Header()] = None) -> dict | None:
+        return staff_access("campaigns", x_staff_session, x_admin_key, app.state.admin_api_key)
+
+    def require_staff_user(x_staff_session: Annotated[str | None, Header()] = None) -> dict:
+        user = session_user(app.state.engine, x_staff_session)
+        if not user:
+            raise HTTPException(status_code=401, detail="Sesión vencida. Vuelve a entrar")
+        return user
+
+    def require_staff_owner(user: dict = Depends(require_staff_user)) -> dict:
+        if not user["is_owner"]:
+            raise HTTPException(status_code=403, detail="Solo la cuenta principal administra el equipo")
+        return user
+
+    @app.middleware("http")
+    async def audit_staff_requests(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if response.status_code < 400 and (path.startswith("/cashier/") or path.startswith("/admin/") or
+                                           (request.method != "GET" and path.startswith("/customers")) or
+                                           (request.method != "GET" and path.startswith("/staff/team"))):
+            user = session_user(app.state.engine, request.headers.get("x-staff-session"))
+            if user:
+                log_action(app.state.engine, user["id"], f"{request.method} {request.scope.get('route').path if request.scope.get('route') else path}", path)
+        return response
+
+    @app.get("/staff/setup")
+    def staff_setup_status() -> dict:
+        return {"owner_exists": owner_exists(app.state.engine)}
+
+    @app.post("/staff/bootstrap", status_code=201)
+    def bootstrap_staff(payload: StaffCreate, x_admin_key: Annotated[str | None, Header()] = None) -> dict:
+        if not app.state.admin_api_key or not x_admin_key or not hmac.compare_digest(x_admin_key, app.state.admin_api_key):
+            raise HTTPException(status_code=401, detail="Clave de gerencia incorrecta")
+        if owner_exists(app.state.engine):
+            raise HTTPException(status_code=409, detail="La cuenta principal ya existe")
+        try:
+            user, code = create_user(app.state.engine, payload.full_name, list(PERMISSIONS), is_owner=True)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {"user": user, "code": code}
+
+    @app.post("/staff/recover-owner")
+    def recover_staff_owner(x_admin_key: Annotated[str | None, Header()] = None) -> dict:
+        if not app.state.admin_api_key or not x_admin_key or not hmac.compare_digest(x_admin_key, app.state.admin_api_key):
+            raise HTTPException(status_code=401, detail="Clave de gerencia incorrecta")
+        code = recover_owner_code(app.state.engine)
+        if not code:
+            raise HTTPException(status_code=404, detail="La cuenta principal no existe")
+        return {"code": code}
+
+    @app.post("/staff/login")
+    def staff_sign_in(payload: StaffLogin) -> dict:
+        result = staff_login(app.state.engine, payload.code)
+        if not result:
+            raise HTTPException(status_code=401, detail="Código incorrecto o cuenta desactivada")
+        user, token = result
+        return {"user": user, "session": token}
+
+    @app.get("/staff/me")
+    def staff_me(user: dict = Depends(require_staff_user)) -> dict:
+        return user
+
+    @app.post("/staff/logout")
+    def staff_sign_out(user: dict = Depends(require_staff_user),
+                       x_staff_session: Annotated[str | None, Header()] = None) -> dict:
+        revoke_session(app.state.engine, x_staff_session or "", user["id"])
+        return {"ok": True}
+
+    @app.get("/staff/team")
+    def staff_team(_: dict = Depends(require_staff_owner)) -> list[dict]:
+        return list_users(app.state.engine)
+
+    @app.post("/staff/team", status_code=201)
+    def add_staff_member(payload: StaffCreate, _: dict = Depends(require_staff_owner)) -> dict:
+        try:
+            user, code = create_user(app.state.engine, payload.full_name, payload.permissions)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"user": user, "code": code}
+
+    @app.patch("/staff/team/{user_id}")
+    def change_staff_member(user_id: str, payload: StaffUpdate, _: dict = Depends(require_staff_owner)) -> dict:
+        try:
+            user = update_user(app.state.engine, user_id, **payload.model_dump(exclude_unset=True))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if not user:
+            raise HTTPException(status_code=404, detail="Empleado no encontrado")
+        return user
+
+    @app.post("/staff/team/{user_id}/reset-code")
+    def reset_staff_code(user_id: str, _: dict = Depends(require_staff_owner)) -> dict:
+        try:
+            code = rotate_code(app.state.engine, user_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if not code:
+            raise HTTPException(status_code=404, detail="Empleado no encontrado")
+        return {"code": code}
+
+    @app.get("/staff/actions")
+    def staff_activity(limit: int = Query(100, ge=1, le=200), _: dict = Depends(require_staff_owner)) -> list[dict]:
+        return list_actions(app.state.engine, limit)
 
     @app.get("/cashier/customers", response_model=CashierCustomerOut)
     def find_cashier_customer(phone: str, _: None = Depends(require_cashier)) -> dict:
@@ -707,32 +845,32 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
             raise _error_to_http(error) from error
 
     @app.post("/admin/rewards", response_model=RewardOut, status_code=status.HTTP_201_CREATED)
-    def add_reward(payload: RewardCreate, _: None = Depends(require_admin)) -> dict:
+    def add_reward(payload: RewardCreate, _: None = Depends(require_rewards)) -> dict:
         try:
             return create_reward(app.state.engine, **payload.model_dump())
         except CustomerError as error:
             raise _error_to_http(error) from error
 
     @app.post("/admin/campaigns", response_model=CampaignCreated, status_code=status.HTTP_201_CREATED)
-    def add_campaign(payload: CampaignCreate, _: None = Depends(require_admin)) -> dict:
+    def add_campaign(payload: CampaignCreate, _: None = Depends(require_campaigns)) -> dict:
         try:
             return create_campaign(app.state.engine, **payload.model_dump())
         except CustomerError as error:
             raise _error_to_http(error) from error
 
     @app.get("/admin/campaigns", response_model=list[CampaignSummaryOut])
-    def read_admin_campaigns(_: None = Depends(require_admin)) -> list[dict]:
+    def read_admin_campaigns(_: None = Depends(require_campaigns)) -> list[dict]:
         return list_campaigns(app.state.engine)
 
     @app.get("/admin/campaigns/{campaign_id}/preview", response_model=CampaignPreviewOut)
-    def read_campaign_preview(campaign_id: str, _: None = Depends(require_admin)) -> dict:
+    def read_campaign_preview(campaign_id: str, _: None = Depends(require_campaigns)) -> dict:
         try:
             return preview_campaign(app.state.engine, campaign_id)
         except CustomerError as error:
             raise _error_to_http(error) from error
 
     @app.post("/admin/campaigns/{campaign_id}/send-sms", response_model=CampaignDispatchOut)
-    def send_campaign_sms(campaign_id: str, limit: int = Query(5, ge=1, le=5), _: None = Depends(require_admin)) -> dict:
+    def send_campaign_sms(campaign_id: str, limit: int = Query(5, ge=1, le=5), _: None = Depends(require_campaigns)) -> dict:
         if not app.state.campaign_sender:
             raise HTTPException(status_code=503, detail="El envío de SMS no está configurado")
         try:
@@ -742,7 +880,7 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
 
     @app.get("/admin/campaigns/{campaign_id}/deliveries", response_model=CampaignDeliveryReportOut)
     def read_campaign_deliveries(campaign_id: str, limit: int = Query(100, ge=1, le=200),
-                                 offset: int = Query(0, ge=0), _: None = Depends(require_admin)) -> dict:
+                                 offset: int = Query(0, ge=0), _: None = Depends(require_campaigns)) -> dict:
         try:
             return list_campaign_deliveries(app.state.engine, campaign_id, limit, offset)
         except CustomerError as error:
@@ -767,21 +905,21 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
         return list_next_best_actions(app.state.engine)
 
     @app.post("/admin/campaigns/by-segment", response_model=CampaignCreated, status_code=status.HTTP_201_CREATED)
-    def add_segment_campaign(payload: SegmentCampaignCreate, _: None = Depends(require_admin)) -> dict:
+    def add_segment_campaign(payload: SegmentCampaignCreate, _: None = Depends(require_campaigns)) -> dict:
         try:
             return create_campaign_for_segment(app.state.engine, **payload.model_dump())
         except CustomerError as error:
             raise _error_to_http(error) from error
 
     @app.post("/admin/campaigns/{campaign_id}/activate")
-    def activate_existing_campaign(campaign_id: str, _: None = Depends(require_admin)) -> dict:
+    def activate_existing_campaign(campaign_id: str, _: None = Depends(require_campaigns)) -> dict:
         try:
             return activate_campaign(app.state.engine, campaign_id)
         except CustomerError as error:
             raise _error_to_http(error) from error
 
     @app.get("/admin/campaigns/{campaign_id}/analytics", response_model=CampaignAnalyticsOut)
-    def read_campaign_analytics(campaign_id: str, _: None = Depends(require_admin)) -> dict:
+    def read_campaign_analytics(campaign_id: str, _: None = Depends(require_campaigns)) -> dict:
         try:
             return get_campaign_analytics(app.state.engine, campaign_id)
         except CustomerError as error:
