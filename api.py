@@ -33,6 +33,7 @@ from customer_service import (
     list_campaigns,
     preview_campaign,
     dispatch_sms_campaign,
+    list_campaign_deliveries,
     activate_campaign,
     create_reward,
     create_login_challenge,
@@ -246,6 +247,19 @@ class CampaignDispatchOut(APIModel):
     uncertain: int
     invalid_phone: int
     remaining: int
+
+
+class CampaignDeliveryOut(APIModel):
+    customer_name: str
+    phone_masked: str
+    status: str
+    sent_at: datetime | None = None
+
+
+class CampaignDeliveryReportOut(APIModel):
+    total_count: int
+    offset: int
+    rows: list[CampaignDeliveryOut]
 
 
 class CampaignInteraction(RequestModel):
@@ -723,6 +737,14 @@ def create_app(engine: Engine | None = None, otp_sender: Callable[[str, str], No
             raise HTTPException(status_code=503, detail="El envío de SMS no está configurado")
         try:
             return dispatch_sms_campaign(app.state.engine, campaign_id, app.state.campaign_sender, limit)
+        except CustomerError as error:
+            raise _error_to_http(error) from error
+
+    @app.get("/admin/campaigns/{campaign_id}/deliveries", response_model=CampaignDeliveryReportOut)
+    def read_campaign_deliveries(campaign_id: str, limit: int = Query(100, ge=1, le=200),
+                                 offset: int = Query(0, ge=0), _: None = Depends(require_admin)) -> dict:
+        try:
+            return list_campaign_deliveries(app.state.engine, campaign_id, limit, offset)
         except CustomerError as error:
             raise _error_to_http(error) from error
 

@@ -10,6 +10,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from hashlib import sha256
+import re
 from typing import Callable
 from uuid import uuid4
 
@@ -481,6 +482,43 @@ def dispatch_sms_campaign(engine: Engine, campaign_id: str,
         result[state] += 1
     result["remaining"] = preview_campaign(engine, campaign_id)["pending_sms_count"]
     return result
+
+
+def list_campaign_deliveries(engine: Engine, campaign_id: str, limit: int = 100, offset: int = 0) -> dict:
+    """Return masked recipient outcomes for a manager's SMS audit."""
+    with engine.connect() as conn:
+        channel = conn.execute(select(campaigns.c.channel).where(campaigns.c.id == campaign_id)).scalar_one_or_none()
+        if channel != "sms":
+            raise CustomerError("La campaña SMS no existe")
+        total = conn.execute(select(func.count()).select_from(campaign_recipients).where(
+            campaign_recipients.c.campaign_id == campaign_id,
+        )).scalar_one()
+        rows = conn.execute(select(customers.c.full_name, customers.c.phone, customers.c.status.label("customer_status"),
+                                   customers.c.marketing_consent, campaign_recipients.c.status,
+                                   campaign_recipients.c.sent_at)
+            .join(customers, customers.c.id == campaign_recipients.c.customer_id)
+            .where(campaign_recipients.c.campaign_id == campaign_id)
+            .order_by(customers.c.full_name, campaign_recipients.c.id)
+            .limit(limit).offset(offset)).mappings().all()
+    deliveries = []
+    for row in rows:
+        if row["sent_at"] is not None:
+            delivery_status = "accepted"
+        elif row["status"] in {"sending", "uncertain"}:
+            delivery_status = "uncertain"
+        elif row["status"] == "invalid_phone":
+            delivery_status = "invalid_phone"
+        elif row["customer_status"] != "active" or not row["marketing_consent"]:
+            delivery_status = "excluded"
+        elif row["status"] in {"opened", "clicked"}:
+            delivery_status = "seen_in_club"
+        else:
+            delivery_status = "pending"
+        digits = re.sub(r"\D", "", row["phone"] or "")
+        deliveries.append({"customer_name": row["full_name"],
+                           "phone_masked": f"•••• {digits[-4:]}" if len(digits) >= 4 else "Sin teléfono",
+                           "status": delivery_status, "sent_at": row["sent_at"]})
+    return {"total_count": int(total), "offset": offset, "rows": deliveries}
 
 
 def list_customer_campaigns(engine: Engine, customer_id: str) -> list[dict]:
