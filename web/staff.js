@@ -4,6 +4,24 @@ let loadedWansoftTicketId = null;
 const byId = (id) => document.getElementById(id);
 if (location.protocol === "file:") byId("staff-file-notice").hidden = false;
 
+function switchView(buttonSelector, viewAttribute, activeId) {
+  document.querySelectorAll(buttonSelector).forEach((button) => {
+    const active = button.dataset[viewAttribute] === activeId;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    byId(button.dataset[viewAttribute]).hidden = !active;
+  });
+}
+document.querySelectorAll("[data-staff-view]").forEach((button) => button.addEventListener("click", () => {
+  switchView("[data-staff-view]", "staffView", button.dataset.staffView);
+}));
+document.querySelectorAll("[data-manager-view]").forEach((button) => button.addEventListener("click", () => {
+  switchView("[data-manager-view]", "managerView", button.dataset.managerView);
+}));
+document.querySelectorAll("[data-cashier-view]").forEach((button) => button.addEventListener("click", () => {
+  switchView("[data-cashier-view]", "cashierView", button.dataset.cashierView);
+}));
+
 function setMessage(id, value, error = false) {
   const element = byId(id);
   element.textContent = value;
@@ -406,7 +424,7 @@ byId("reward-form").addEventListener("submit", async (event) => {
 byId("campaign-form").addEventListener("submit", async (event) => {
   event.preventDefault(); setMessage("campaign-message", "Guardando…");
   try {
-    const campaign = await managerRequest("/admin/campaigns/by-segment", { method: "POST", body: JSON.stringify({ name: byId("campaign-name").value.trim(), channel: byId("campaign-channel").value, segment: byId("segment").value, message: byId("campaign-text").value.trim() }) });
+    const campaign = await managerRequest("/admin/campaigns/by-segment", { method: "POST", body: JSON.stringify({ name: byId("campaign-name").value.trim(), channel: byId("campaign-channel").value, segment: byId("campaign-segment").value, message: byId("campaign-text").value.trim() }) });
     setMessage("campaign-message", `Borrador creado para ${campaign.recipient_count} clientes. ID: ${campaign.id}`);
     byId("campaign-form").reset();
     await loadCampaigns();
