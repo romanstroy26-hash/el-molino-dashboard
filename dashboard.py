@@ -821,8 +821,11 @@ def page_dashboard():
     rango = _cache_rango_fechas(engine, sucursal_filtro)
     fecha_min = dt.date.fromisoformat(rango[0])
     fecha_max = dt.date.fromisoformat(rango[1])
+    # По умолчанию -- последние 30 дней (не вся история): так при открытии
+    # сразу видна свежая динамика, а не усреднённая картина за годы.
+    fecha_default_desde = max(fecha_min, fecha_max - dt.timedelta(days=29))
     desde, hasta = st.sidebar.date_input(
-        "Диапазон дат", value=(fecha_min, fecha_max),
+        "Диапазон дат", value=(fecha_default_desde, fecha_max),
         min_value=fecha_min, max_value=fecha_max,
     )
     st.sidebar.caption(f"Данные есть с {fecha_min} по {fecha_max}")
@@ -893,6 +896,8 @@ def page_dashboard():
             if shtuki_prev is not None and shtuki_prev[cat]:
                 delta_txt = f"{100 * (shtuki[cat] - shtuki_prev[cat]) / shtuki_prev[cat]:+.1f}%"
         col.metric(cat, valor_txt, delta=delta_txt)
+        if medida_label != "Выручка, $":
+            col.caption(f"{dinero[cat]:,.0f} $")
 
     if filas_prev:
         st.caption(
