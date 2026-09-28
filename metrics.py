@@ -368,7 +368,17 @@ def cafe_por_sucursal(engine: Engine, desde: str | None = None,
     punto en pesos absolutos."""
     keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
 
-    sql = "SELECT sucursal, tipo_grupo, platillo, importe, cantidad FROM sales_lines WHERE 1=1"
+    # Agregado en el SQL por (sucursal, tipo_grupo, platillo) -- no fila
+    # por fila en Python: sin esto, esta consulta trae TODA la tabla (sin
+    # filtro de sucursal ni de tipo_grupo, a propósito, para comparar
+    # todas las sucursales de una vez) -- con las ~900 mil líneas que ya
+    # tiene la base, el driver de Postgres llegó a cortar la conexión a
+    # mitad de la descarga (SSL error). Agrupado por posición de menú son
+    # unos pocos cientos/miles de filas, no cientos de miles -- is_coffee
+    # sigue clasificando por platillo/tipo_grupo, solo que ya agregado.
+    sql = ("SELECT sucursal, tipo_grupo, platillo, "
+           "SUM(importe) AS importe, SUM(cantidad) AS cantidad "
+           "FROM sales_lines WHERE 1=1")
     params: dict = {}
     if desde:
         sql += " AND fecha >= :desde"
@@ -376,6 +386,7 @@ def cafe_por_sucursal(engine: Engine, desde: str | None = None,
     if hasta:
         sql += " AND fecha <= :hasta"
         params["hasta"] = hasta
+    sql += " GROUP BY sucursal, tipo_grupo, platillo"
 
     ventas_totales = defaultdict(float)
     cafe = defaultdict(float)
