@@ -198,6 +198,11 @@ def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_cafe_por_sucursal(_engine, desde, hasta):
+    return metrics.cafe_por_sucursal(_engine, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_top_platillos_bebidas(_engine, sucursal, desde, hasta):
     return metrics.top_platillos_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta, n=6)
 
@@ -808,8 +813,9 @@ def page_dashboard():
     granularidad_label = st.sidebar.radio(
         "Разбивка по периодам",
         ["По дням", "По декадам (10 дней)", "По кинсенам (15 дней)", "По месяцам"],
-        index=3,  # по умолчанию -- месяцы: удобнее всего смотреть динамику
-                  # долей за долгий период
+        index=0,  # по умолчанию -- дни: диапазон дат тоже по умолчанию
+                  # короткий (последние 30 дней), там дни -- самая полезная
+                  # разбивка
     )
     granularidad = {
         "По дням": "dia",
@@ -913,13 +919,35 @@ def page_dashboard():
             f"предыдущий период такой же длины."
         )
 
-    if dinero["Фраппе"]:
-        st.caption(
-            f"Кофе : Фраппе = {dinero['Кофе'] / dinero['Фраппе']:.1f} : 1 "
-            f"(во сколько раз выручка кофе больше выручки фраппе)."
-        )
-    else:
-        st.caption("За выбранный период фраппе не продавались -- соотношение посчитать не из чего.")
+    # ---- Сравнение точек по кофе ---------------------------------------------
+    # Единственный блок на странице, который НЕ подчиняется фильтру "Точка"
+    # слева -- специально: остальная страница акотает до одной точки (или
+    # суммирует все), а здесь наоборот нужно видеть точки РЯДОМ, чтобы
+    # сравнить их между собой.
+    if len(sucursales) > 1:
+        st.subheader("Кофе по точкам")
+        cafe_suc = _cache_cafe_por_sucursal(engine, desde.isoformat(), hasta.isoformat())
+        if cafe_suc:
+            df_suc = pd.DataFrame(cafe_suc)
+            grafico_suc = alt.Chart(df_suc).mark_bar().encode(
+                x=alt.X("cafe_pct_ventas:Q", title="Доля кофе в продажах точки, %"),
+                y=alt.Y("sucursal:N", title=None, sort="-x"),
+                color=alt.value(_COLOR_KATEGORII["Кофе"]),
+                tooltip=[
+                    alt.Tooltip("sucursal:N", title="Точка"),
+                    alt.Tooltip("cafe_pct_ventas:Q", title="Доля кофе, %", format=".1f"),
+                    alt.Tooltip("cafe_total:Q", title="Выручка кофе, $", format=",.0f"),
+                    alt.Tooltip("unidades_cafe:Q", title="Кофе, шт", format=",.0f"),
+                    alt.Tooltip("ventas_totales:Q", title="Продажи точки всего, $", format=",.0f"),
+                ],
+            ).properties(height=32 * len(df_suc) + 40)
+            st.altair_chart(grafico_suc, width="stretch")
+            st.caption(
+                "Доля кофе -- от ВСЕХ продаж точки (не только напитков), чтобы "
+                "сравнение не зависело от размера точки в деньгах. Диапазон "
+                "дат -- из фильтра слева, но сама точка -- нет: здесь всегда "
+                "все точки сразу, вне зависимости от выбора «Точка» выше."
+            )
 
     # ---- ОБЩИЙ график: 4 категории, измерение -- из фильтра слева -----------
     st.subheader(f"Динамика: {medida_label.lower()}")

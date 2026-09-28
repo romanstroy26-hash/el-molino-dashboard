@@ -337,6 +337,55 @@ def top_platillos_bebidas(engine: Engine, sucursal: str | None = None,
     return {"Кофе": _top(cafe), "Фраппе": _top(frappe), "Остальные напитки": _top(otras)}
 
 
+def cafe_por_sucursal(engine: Engine, desde: str | None = None,
+                       hasta: str | None = None) -> list[dict]:
+    """Compara el rendimiento del café ENTRE puntos -- pregunta que ninguna
+    otra función de este archivo responde, porque todas filtran a UN punto
+    a la vez (o a todos juntos). Siempre trae TODAS las sucursales, sin
+    importar el filtro "Точка" de la barra lateral -- es la única sección
+    de la página pensada para comparar, no para acotar.
+
+    "% de café" aquí es sobre las VENTAS TOTALES de esa sucursal (todo el
+    menú, no solo bebidas) -- así se compara qué tanto pesa el café en
+    cada negocio, sin que el resultado dependa de qué tan grande es el
+    punto en pesos absolutos."""
+    keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
+
+    sql = "SELECT sucursal, tipo_grupo, platillo, importe, cantidad FROM sales_lines WHERE 1=1"
+    params: dict = {}
+    if desde:
+        sql += " AND fecha >= :desde"
+        params["desde"] = desde
+    if hasta:
+        sql += " AND fecha <= :hasta"
+        params["hasta"] = hasta
+
+    ventas_totales = defaultdict(float)
+    cafe = defaultdict(float)
+    unid_cafe = defaultdict(float)
+
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            suc = row["sucursal"]
+            ventas_totales[suc] += row["importe"]
+            if is_coffee(row["platillo"], row["tipo_grupo"], keywords):
+                cafe[suc] += row["importe"]
+                unid_cafe[suc] += row["cantidad"]
+
+    salida = [
+        {
+            "sucursal": suc,
+            "cafe_total": round(cafe.get(suc, 0.0), 2),
+            "unidades_cafe": round(unid_cafe.get(suc, 0.0), 2),
+            "ventas_totales": round(tot, 2),
+            "cafe_pct_ventas": round(100 * cafe.get(suc, 0.0) / tot, 2) if tot else 0.0,
+        }
+        for suc, tot in ventas_totales.items()
+    ]
+    salida.sort(key=lambda r: r["cafe_total"], reverse=True)
+    return salida
+
+
 def _filtro_rango_sql(sucursal, desde, hasta):
     """Construye el fragmento WHERE + parámetros compartido por varias
     consultas de abajo (mismo patrón que serie_por_periodo)."""
