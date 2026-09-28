@@ -793,6 +793,7 @@ def page_home():
     # способом, а не повторяем проверку в каждом месте по отдельности.
     if not resumen["dia_cerrado"]:
         resumen["ventas_vs_tipico_pct"] = None
+        resumen["ordenes_vs_tipico_pct"] = None
         resumen["cheque_vs_tipico_pct"] = None
         for cat in resumen["categorias"]:
             cat["tipico_pct"] = None
@@ -825,13 +826,20 @@ def page_home():
 
     with datos_col:
         fila1 = st.columns(3)
-        fila1[0].metric("Продажи", f"{resumen['num_ordenes']:,}")
 
         # "Типично для {день недели}" -- взвешенное среднее по тем же дням
         # недели за последние 90 дней (metrics.resumen_dia_con_tipico),
         # тот же метод, что и остальные прогнозы в этом файле. Без этого
         # цифра дня читается сама по себе -- непонятно, много это или мало
         # ИМЕННО для {день недели}, а не в среднем по всем дням сразу.
+        fila1[0].metric(
+            "Продажи", f"{resumen['num_ordenes']:,}",
+            delta=(f"{resumen['ordenes_vs_tipico_pct']:+.1f}% к типичному {resumen['dia_semana']}"
+                   if resumen.get("ordenes_vs_tipico_pct") is not None else None),
+        )
+        if resumen.get("tipico_num_ordenes") is not None:
+            fila1[0].caption(f"обычно ~{resumen['tipico_num_ordenes']:,.0f}")
+
         fila1[1].metric(
             "Выручка", f"{resumen['ventas_totales']:,.0f} $",
             delta=(f"{resumen['ventas_vs_tipico_pct']:+.1f}% к типичному {resumen['dia_semana']}"
@@ -851,6 +859,10 @@ def page_home():
         serie_reciente = resumen.get("serie_reciente") or []
         if len(serie_reciente) >= 3:
             df_spark = pd.DataFrame(serie_reciente)
+            fila1[0].altair_chart(
+                _sparkline(df_spark, "num_ordenes", COLOR_TIPICO),
+                width="stretch", key="spark_ordenes",
+            )
             fila1[1].altair_chart(
                 _sparkline(df_spark, "ventas_totales", COLOR_PRIMARIO),
                 width="stretch", key="spark_ventas",
@@ -859,6 +871,7 @@ def page_home():
                 _sparkline(df_spark, "cheque_promedio", COLOR_SECUNDARIO),
                 width="stretch", key="spark_cheque",
             )
+            fila1[0].caption("последние 14 дней")
             fila1[1].caption("последние 14 дней")
             fila1[2].caption("последние 14 дней")
 

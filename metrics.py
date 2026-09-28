@@ -793,16 +793,22 @@ def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = No
     serie = serie_dia_resumen(engine, desde_historia, hasta_historia, sucursal=sucursal)
 
     ventas_por_fecha = {dt.date.fromisoformat(d["fecha"]): d["ventas_totales"] for d in serie}
+    ordenes_por_fecha = {dt.date.fromisoformat(d["fecha"]): d["num_ordenes"] for d in serie}
     ticket_por_fecha = {
         dt.date.fromisoformat(d["fecha"]): d["cheque_promedio"] for d in serie if d["num_ordenes"]
     }
 
     tipico_ventas = _tipico_recencia(ventas_por_fecha, target)
+    tipico_ordenes = _tipico_recencia(ordenes_por_fecha, target)
     tipico_ticket = _tipico_recencia(ticket_por_fecha, target)
 
     resumen["tipico_ventas_totales"] = round(tipico_ventas, 2) if tipico_ventas is not None else None
     resumen["ventas_vs_tipico_pct"] = (
         _delta_pct(resumen["ventas_totales"], tipico_ventas) if tipico_ventas else None
+    )
+    resumen["tipico_num_ordenes"] = round(tipico_ordenes, 1) if tipico_ordenes is not None else None
+    resumen["ordenes_vs_tipico_pct"] = (
+        _delta_pct(resumen["num_ordenes"], tipico_ordenes) if tipico_ordenes else None
     )
     resumen["tipico_cheque_promedio"] = round(tipico_ticket, 2) if tipico_ticket is not None else None
     resumen["cheque_vs_tipico_pct"] = (
