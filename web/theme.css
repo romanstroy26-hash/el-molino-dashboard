@@ -127,11 +127,11 @@ body.staff-page{color:var(--ink);background:radial-gradient(ellipse at 8% 2%,#e2
 .staff-page .staff-header a:hover,.staff-page .staff-language>button:hover,.staff-page .staff-account button:hover{background:#c4d3b9}
 .staff-page .staff-language-menu{background:var(--paper);border-color:#d1c1a9}
 .staff-page .staff-language-menu button{color:var(--forest)}
-.staff-page .staff-intro{background:radial-gradient(circle at 84% 20%,#5b8b6c 0,transparent 38%),linear-gradient(120deg,#275f51,#133d34);border:1px solid #cfdfc154;box-shadow:0 20px 50px #061b15aa}
+.staff-page .staff-intro{background:radial-gradient(circle at 84% 20%,#5b8b6c 0,transparent 38%),linear-gradient(120deg,#275f51,#133d34);border:1px solid #cfdfc154;box-shadow:0 18px 42px #31524430}
 .staff-page .staff-intro .muted{color:#e0e8d3}
 .staff-page .staff-intro .eyebrow{color:#f0c9a0}
 .staff-page .staff-intro .welcome-dot{color:var(--sand)}
-.staff-page .staff-login-card{background:linear-gradient(145deg,#f5e7d1,#ead6b8);border-color:#f3e6d1;color:var(--ink)}
+.staff-page .staff-login-card{background:linear-gradient(145deg,#f5e7d1,#ead6b8);border-color:#f3e6d1;color:var(--ink);box-shadow:0 12px 32px #3152441a}
 .staff-page .staff-login-card .muted{color:#5b705f}
 .staff-page .staff-login-card label{color:#325443}
 .staff-page .staff-login-card input{background:#fff9ef}
