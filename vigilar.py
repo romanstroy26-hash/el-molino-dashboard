@@ -39,8 +39,10 @@ import sys
 import time
 from pathlib import Path
 
+import alertas
 import auto_carga
 import correo
+import metrics
 import tiempo
 from db import DEFAULT_DB_PATH, get_engine
 
@@ -54,6 +56,11 @@ INTERVALO_ARCHIVOS = 15
 # Как часто заглядывать в почту -- редко: это поход по сети на другой
 # сервер, незачем дёргать его каждые 15 секунд.
 INTERVALO_CORREO = 15 * 60
+
+# Как часто проверять "не закрылся ли вчерашний день сильно хуже
+# прогноза" -- раз в час достаточно: alertas.py сам запоминает, кому уже
+# отправлено, так что более частые проверки просто ничего не найдут.
+INTERVALO_ALERTAS = 60 * 60
 
 # Если весь цикл целиком упал (сеть легла, база временно недоступна) --
 # не долбить её раз в 15 секунд, а подождать подольше и попробовать
@@ -145,12 +152,22 @@ def bucle() -> None:
     auto_carga._registrar([f"{tiempo.sello_de_tiempo()}  сторож запущен (PID {os.getpid()})"])
 
     ultimo_correo = 0.0
+    ultima_alerta = 0.0
     try:
         while True:
             try:
                 if con_correo and time.monotonic() - ultimo_correo >= INTERVALO_CORREO:
                     correo.descargar()
                     ultimo_correo = time.monotonic()
+
+                if time.monotonic() - ultima_alerta >= INTERVALO_ALERTAS:
+                    sucursales = metrics.sucursales_disponibles(engine)
+                    enviados = alertas.revisar_y_avisar(engine, sucursales)
+                    if enviados:
+                        auto_carga._registrar(
+                            [f"{tiempo.sello_de_tiempo()}  сторож: отправлено предупреждений: {len(enviados)}"]
+                        )
+                    ultima_alerta = time.monotonic()
 
                 nuevos = auto_carga.archivos_nuevos(estado)
                 if nuevos:

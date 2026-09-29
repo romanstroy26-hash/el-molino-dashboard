@@ -519,6 +519,76 @@ def top_platillos(engine: Engine, sucursal: str | None = None, desde: str | None
     return filas[:n]
 
 
+def analisis_abc(engine: Engine, sucursal: str | None = None, desde: str | None = None,
+                  hasta: str | None = None) -> dict:
+    """ABC/Pareto de posiciones de menú por ingresos -- la pregunta que el
+    top-15 de "Топ товаров" no contesta: "¿cuántas posiciones concentran
+    cuánta venta?" (para decidir qué NO conviene quitar del menú, y qué sí
+    se puede recortar sin perder casi nada). Umbrales estándar de Pareto,
+    no inventados para este negocio: A = hasta 80% acumulado, B = 80-95%,
+    C = el resto.
+
+    Agregado en SQL (GROUP BY platillo), no fila por fila -- mismo motivo
+    que el resto de funciones de este archivo con tablas grandes."""
+    where, params = _filtro_rango_sql(sucursal, desde, hasta)
+    sql = ("SELECT platillo, SUM(importe) AS ventas, SUM(cantidad) AS unidades "
+           "FROM sales_lines" + where + " GROUP BY platillo")
+    with engine.connect() as conn:
+        filas = [dict(r) for r in conn.execute(text(sql), params).mappings()]
+
+    total_ventas = sum(f["ventas"] for f in filas)
+    filas.sort(key=lambda f: f["ventas"], reverse=True)
+
+    acumulado = 0.0
+    detalle = []
+    for f in filas:
+        acumulado += f["ventas"]
+        pct_acumulado = round(100 * acumulado / total_ventas, 1) if total_ventas else 0.0
+        clase = "A" if pct_acumulado <= 80 else ("B" if pct_acumulado <= 95 else "C")
+        detalle.append({
+            "platillo": f["platillo"] or "(без названия)",
+            "ventas": round(f["ventas"], 2),
+            "unidades": round(f["unidades"], 2),
+            "pct_acumulado": pct_acumulado,
+            "clase": clase,
+        })
+
+    clases = {}
+    for clase in ("A", "B", "C"):
+        items_clase = [d for d in detalle if d["clase"] == clase]
+        ventas_clase = sum(d["ventas"] for d in items_clase)
+        clases[clase] = {
+            "n_posiciones": len(items_clase),
+            "pct_posiciones": round(100 * len(items_clase) / len(detalle), 1) if detalle else 0.0,
+            "ventas": round(ventas_clase, 2),
+            "pct_ventas": round(100 * ventas_clase / total_ventas, 1) if total_ventas else 0.0,
+        }
+
+    return {
+        "total_ventas": round(total_ventas, 2),
+        "n_posiciones_total": len(detalle),
+        "clases": clases,
+        "detalle": detalle,
+    }
+
+
+def serie_dia_por_sucursal(engine: Engine, desde: str, hasta: str) -> list[dict]:
+    """Ventas totales por DÍA y por SUCURSAL en el rango -- para comparar
+    la TENDENCIA de cada punto lado a lado (no solo un día, como
+    resumen_dia_por_sucursal, que es de la página "Главная"). Siempre
+    TODAS las sucursales -- no tiene filtro de punto, es justamente para
+    compararlos."""
+    sql = ("SELECT fecha, sucursal, SUM(importe) AS ventas_totales FROM sales_lines "
+           "WHERE fecha >= :desde AND fecha <= :hasta GROUP BY fecha, sucursal")
+    with engine.connect() as conn:
+        filas = [
+            {"fecha": r["fecha"], "sucursal": r["sucursal"], "ventas_totales": round(r["ventas_totales"], 2)}
+            for r in conn.execute(text(sql), {"desde": desde, "hasta": hasta}).mappings()
+        ]
+    filas.sort(key=lambda r: (r["fecha"], r["sucursal"]))
+    return filas
+
+
 def ventas_por_categoria(engine: Engine, sucursal: str | None = None, desde: str | None = None,
                           hasta: str | None = None) -> list[dict]:
     """Ventas totales agrupadas por 'Tipo de grupo' del menú (CAFETERIA,

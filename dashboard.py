@@ -50,6 +50,7 @@ from db import (
     DEFAULT_DB_PATH, get_coffee_keywords, get_engine, get_plan_produccion,
     replace_coffee_keywords, set_plan_produccion,
 )
+import clima
 import metrics
 import tiempo
 
@@ -208,6 +209,20 @@ def _cache_pronostico_dia_total(_engine, fecha, sucursal):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_serie_dia_por_sucursal(_engine, desde, hasta):
+    return metrics.serie_dia_por_sucursal(_engine, desde, hasta)
+
+
+# TTL длиннее обычного (сутки, не 5 минут) -- погода не БД-запрос, а
+# сетевой вызов к внешнему сервису (Open-Meteo); дёргать его каждые 5
+# минут ради одного и того же дня незачем, а прошлые дни всё равно не
+# меняются.
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def _cache_clima_dia(fecha):
+    return clima.clima_dia(fecha)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
     return metrics.patron_horario_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
@@ -294,6 +309,11 @@ def _cache_top_platillos_bebidas(_engine, sucursal, desde, hasta):
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_top_platillos(_engine, sucursal, desde, hasta, n):
     return metrics.top_platillos(_engine, sucursal=sucursal, desde=desde, hasta=hasta, n=n)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_analisis_abc(_engine, sucursal, desde, hasta):
+    return metrics.analisis_abc(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -518,6 +538,25 @@ def _texto_festivo(festivo: dict | None) -> str | None:
     )
 
 
+def _texto_clima(clima_dato: dict | None) -> str | None:
+    """Formulación de la temperatura/lluvia del día (ver clima.clima_dia)
+    -- otra posible explicación VERIFICABLE, en el mismo espíritu que
+    _texto_festivo: no afirma causa, solo aporta el dato de calendario/
+    clima para tenerlo en cuenta junto al resto del análisis."""
+    if not clima_dato or clima_dato.get("temp_max") is None:
+        return None
+    partes = [f"макс. {clima_dato['temp_max']:.0f}°C"]
+    lluvia = clima_dato.get("lluvia_mm")
+    if lluvia is not None:
+        partes.append(f"осадки {lluvia:.0f} мм" if lluvia >= 1 else "без осадков")
+    return (
+        f"Возможный фактор погоды: {', '.join(partes)} -- жара обычно "
+        f"двигает спрос в сторону фраппе/холодных напитков, дождь может "
+        f"снижать общий трафик (гипотеза, не подтверждённая причина -- "
+        f"источник: Open-Meteo)."
+    )
+
+
 def _texto_analisis_dia(a: dict) -> tuple[str, list[str]]:
     """Превращает диагностику из metrics.analizar_desempeno_por_hora в текст
     на русском -- пороги и арифметика (что считать 'сосредоточенным'
@@ -651,6 +690,9 @@ def _bloque_analisis_dia(df: pd.DataFrame, fecha: str) -> None:
         return
 
     resumen, recomendaciones = _texto_analisis_dia(analisis)
+    clima_txt = _texto_clima(_cache_clima_dia(fecha))
+    if clima_txt:
+        resumen += " " + clima_txt
     icono = {"por_encima": "✅", "en_linea": "➖", "por_debajo": "⚠️"}[analisis["estado"]]
 
     # st.markdown интерпретирует пары "$...$" как формулу LaTeX -- а в
@@ -1054,6 +1096,29 @@ def page_home():
                     "Выручка, $": st.column_config.NumberColumn(format="%.0f $"),
                     "Ср. чек, $": st.column_config.NumberColumn(format="%.0f $"),
                 },
+            )
+
+        # "Точки сегодня" -- один день; здесь -- ТРЕНД за последние 30
+        # дней, чтобы ответить на другой вопрос: не "кто сегодня продал
+        # больше", а "какая точка растёт, а какая падает".
+        desde_tendencia = (dt.date.fromisoformat(fecha_elegida) - dt.timedelta(days=29)).isoformat()
+        serie_puntos = _cache_serie_dia_por_sucursal(engine, desde_tendencia, fecha_elegida)
+        if serie_puntos:
+            grafico_puntos = alt.Chart(pd.DataFrame(serie_puntos)).mark_line(point=False).encode(
+                x=alt.X("fecha:T", title="Дата"),
+                y=alt.Y("ventas_totales:Q", title="Выручка, $"),
+                color=alt.Color("sucursal:N", title=None, legend=alt.Legend(orient="bottom")),
+                tooltip=[
+                    alt.Tooltip("fecha:T", title="Дата"),
+                    alt.Tooltip("sucursal:N", title="Точка"),
+                    alt.Tooltip("ventas_totales:Q", title="Выручка, $", format=",.0f"),
+                ],
+            ).properties(height=260)
+            st.altair_chart(grafico_puntos, width="stretch")
+            st.caption(
+                "Выручка по дням за последние 30 дней, обе точки на одном "
+                "графике -- видно, какая точка растёт, а какая падает, а "
+                "не только кто сегодня продал больше."
             )
 
 
@@ -1685,6 +1750,43 @@ def page_top_productos():
             width="stretch",
         )
 
+    # ---- ABC-анализ (Парето) -----------------------------------------------
+    # Топ-15 выше отвечает "что продаётся лучше всего". ABC отвечает на
+    # другой вопрос: "сколько позиций вообще делают выручку, а сколько --
+    # длинный хвост, без которого почти ничего не изменится".
+    st.subheader("ABC-анализ позиций (Парето)")
+    abc = _cache_analisis_abc(engine, sucursal_filtro, desde.isoformat(), hasta.isoformat())
+    if abc["n_posiciones_total"]:
+        clase_a = abc["clases"]["A"]
+        st.write(
+            f"**{clase_a['pct_posiciones']:.0f}% позиций меню "
+            f"({clase_a['n_posiciones']} из {abc['n_posiciones_total']}) "
+            f"дают {clase_a['pct_ventas']:.0f}% выручки** -- это класс A: "
+            f"на них в первую очередь и держится продуктовая линейка."
+        )
+        col_a, col_b, col_c = st.columns(3)
+        for col, clase in zip((col_a, col_b, col_c), ("A", "B", "C")):
+            d = abc["clases"][clase]
+            col.metric(
+                f"Класс {clase}", f"{d['n_posiciones']} поз. ({d['pct_posiciones']:.0f}%)",
+            )
+            col.caption(f"{d['ventas']:,.0f} $ ({d['pct_ventas']:.0f}% выручки)")
+
+        with st.expander("Таблица ABC (все позиции)"):
+            st.dataframe(
+                pd.DataFrame(abc["detalle"]).rename(columns={
+                    "platillo": "Позиция", "ventas": "Выручка, $", "unidades": "Штук",
+                    "pct_acumulado": "Накоплено, %", "clase": "Класс",
+                }),
+                width="stretch", hide_index=True,
+            )
+        st.caption(
+            "A -- первые позиции, дающие до 80% выручки нарастающим "
+            "итогом; B -- следующие до 95%; C -- длинный хвост "
+            "(оставшиеся 5%). Стандартные пороги Парето, не подобраны "
+            "специально под это меню."
+        )
+
 
 # =============================================================================
 # Страница "Планирование" -- Panadería: реальные продажи, прогноз и план
@@ -2071,6 +2173,9 @@ def page_planificacion():
             festivo_txt = _texto_festivo(analisis.get("festivo_peor_dia"))
             if festivo_txt:
                 st.write(festivo_txt)
+            clima_txt_planificacion = _texto_clima(_cache_clima_dia(analisis["peor_dia"]))
+            if clima_txt_planificacion:
+                st.write(clima_txt_planificacion)
 
         analisis_plan = metrics.analizar_desviacion_produccion(dias_para_analisis, "unidades_plan")
         if analisis_plan is not None:
@@ -2084,8 +2189,9 @@ def page_planificacion():
         st.caption(
             "Это разбор тех же цифр, что и на графике выше -- статистика "
             "(тренд/единичный день) плюс проверка по календарю мексиканских "
-            "праздников (см. выше, если совпало); другие причины -- акция, "
-            "погода, локальное событие -- в данных не видны."
+            "праздников и по погоде в Сан-Луис-Потоси (см. выше, если "
+            "совпало); другие причины -- акция, локальное событие -- в "
+            "данных не видны."
         )
 
 
