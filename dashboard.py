@@ -203,6 +203,11 @@ def _cache_ventas_por_hora(_engine, fecha, sucursal):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_pronostico_dia_total(_engine, fecha, sucursal):
+    return metrics.pronostico_dia_total(_engine, fecha, sucursal=sucursal)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
     return metrics.patron_horario_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
@@ -863,6 +868,15 @@ def page_home():
         )
         if resumen.get("tipico_ventas_totales") is not None:
             fila1[1].caption(f"обычно ~{resumen['tipico_ventas_totales']:,.0f} $")
+        if resumen.get("racha"):
+            # Серия из нескольких дней подряд по одну сторону от нормы --
+            # сильнее сигнализирует тренд, чем разовое "День к дню"
+            # справа (см. metrics._racha_desviacion).
+            racha = resumen["racha"]
+            if racha["direccion"] == "por_encima":
+                fila1[1].caption(f"📈 Уже {racha['dias']}-й день подряд выше нормы")
+            else:
+                fila1[1].caption(f"📉 Уже {racha['dias']}-й день подряд ниже нормы")
 
         fila1[2].metric(
             "Ср. чек", f"{resumen['cheque_promedio']:,.0f} $",
@@ -940,6 +954,54 @@ def page_home():
 
     with cmp2_col:
         _panel_semana_vs_semana_pasada(comparacion["semana_vs_semana_pasada"])
+
+    # ---- Ожидается завтра / Лидер дня / План на этот день ------------------
+    # "Завтра" -- всегда от СЕГОДНЯШНЕГО дня (tiempo.hoy()), а не от
+    # выбранного в фильтре "День" -- это взгляд ВПЕРЁД, не привязан к
+    # тому, какой день анализируется выше.
+    col_manana, col_lider, col_plan = st.columns(3)
+    with col_manana:
+        manana = tiempo.hoy() + dt.timedelta(days=1)
+        pron_manana = _cache_pronostico_dia_total(engine, manana.isoformat(), sucursal_filtro)
+        if pron_manana:
+            st.metric(
+                f"📅 Ожидается завтра ({pron_manana['dia_semana']})",
+                f"{pron_manana['ventas_totales']:,.0f} $",
+            )
+            st.caption(f"~{pron_manana['unidades']:,.0f} шт (прогноз по истории)")
+        else:
+            st.caption("📅 Прогноз на завтра: пока недостаточно истории.")
+
+    with col_lider:
+        top_dia = _cache_top_platillos(
+            engine, sucursal_filtro, fecha_elegida, fecha_elegida, 1,
+        )
+        if top_dia:
+            lider = top_dia[0]
+            st.metric("🏆 Лидер дня", lider["platillo"])
+            st.caption(f"{lider['ventas']:,.0f} $, {lider['unidades']:,.0f} шт")
+        else:
+            st.caption("🏆 Лидер дня: нет данных за этот день.")
+
+    with col_plan:
+        # Только для точки, выбранной конкретно (план -- не сумма по всем
+        # точкам сразу, см. страницу "Планирование"), и только если план
+        # на ЭТОТ день уже кем-то введён -- иначе плитка пустая, незачем
+        # показывать "плана нет" на каждой дате.
+        if sucursal_filtro:
+            plan_filas = get_plan_produccion(engine, fecha_elegida, fecha_elegida)
+            if plan_filas:
+                plan_valor = plan_filas[0]["unidades_plan"]
+                pan_dia = _cache_panaderia_real_y_pronostico(
+                    engine, fecha_elegida, fecha_elegida, sucursal_filtro,
+                )
+                real_valor = pan_dia[0]["real_unidades"] if pan_dia else None
+                st.metric(
+                    "📋 План Panadería на этот день",
+                    f"{plan_valor:,.0f} шт",
+                    delta=(f"факт {real_valor:,.0f} шт" if real_valor is not None else None),
+                    delta_color="off",
+                )
 
     st.markdown("**Прогноз и факт по часам**")
     datos_hora = _cache_ventas_por_hora(engine, fecha_elegida, sucursal_filtro)

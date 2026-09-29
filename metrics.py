@@ -816,6 +816,47 @@ def _tipico_recencia(valores_por_fecha: dict[dt.date, float], target: dt.date) -
     return sum(v * p for v, p in zip(valores, pesos)) / peso_total
 
 
+# Días máximos hacia atrás que se revisan para la racha -- una racha más
+# larga que esto ya es un cambio de tendencia sostenido, no algo que
+# necesite destacarse como "racha" puntual en la página "Главная".
+_RACHA_MAX_DIAS = 14
+
+
+def _racha_desviacion(valores_por_fecha: dict[dt.date, float], target: dt.date) -> dict | None:
+    """Cuántos días SEGUIDOS (terminando en `target`, contando hacia
+    atrás) quedaron del MISMO lado (arriba o abajo) de lo típico para su
+    propio día de semana -- una racha de varios días en la misma
+    dirección es una señal de tendencia más fuerte que comparar un solo
+    día contra la semana pasada (que ya existe en el panel "День к дню").
+    Reutiliza `valores_por_fecha` ya cargado (sin consultas nuevas a la
+    base) -- por eso vive junto a _tipico_recencia, que usa el mismo
+    diccionario. None si la racha es de 1 día o menos (nada que destacar)
+    o si no hay suficiente historial."""
+    racha = 0
+    direccion = None
+    d = target
+    for _ in range(_RACHA_MAX_DIAS):
+        real = valores_por_fecha.get(d)
+        if real is None:
+            break
+        tipico = _tipico_recencia(valores_por_fecha, d)
+        if not tipico:
+            break
+        delta_pct = 100 * (real - tipico) / tipico
+        if abs(delta_pct) < _UMBRAL_DESVIACION_PCT:
+            break
+        lado = "por_encima" if delta_pct > 0 else "por_debajo"
+        if direccion is None:
+            direccion = lado
+        elif lado != direccion:
+            break
+        racha += 1
+        d -= dt.timedelta(days=1)
+    if racha < 2:
+        return None
+    return {"dias": racha, "direccion": direccion}
+
+
 _DIAS_HISTORIA_TIPICO_DIA = 90
 
 
@@ -875,6 +916,17 @@ def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = No
         tipico_pct = _tipico_recencia(valores_cat, target) if valores_cat else None
         cat["tipico_pct"] = round(tipico_pct, 1) if tipico_pct is not None else None
         cat["dif_pt"] = round(cat["pct"] - tipico_pct, 1) if tipico_pct is not None else None
+
+    # Racha -- solo tiene sentido para un día YA CERRADO (un día abierto
+    # compararía ventas de medio día contra lo típico de un día
+    # completo, la misma trampa ya resuelta para ventas_vs_tipico_pct
+    # arriba). Se agrega el día de hoy al diccionario -- serie_dia_resumen
+    # ya trae todo lo ANTERIOR, pero no el día que se está resumiendo.
+    if resumen["dia_cerrado"]:
+        ventas_por_fecha[target] = resumen["ventas_totales"]
+        resumen["racha"] = _racha_desviacion(ventas_por_fecha, target)
+    else:
+        resumen["racha"] = None
 
     # Últimos 14 días de la ventana de historia -- suficientes para una
     # sparkline legible sin saturarla de puntos.
@@ -1334,6 +1386,30 @@ def ventas_por_hora(engine: Engine, fecha: str, sucursal: str | None = None) -> 
         "n_dias_promedio": n_dias,
         "n_dias_efectivo": n_efectivo,
         "horas": horas,
+    }
+
+
+def pronostico_dia_total(engine: Engine, fecha: str, sucursal: str | None = None) -> dict | None:
+    """Suma del pronóstico por hora (ventas_por_hora) para UN día completo
+    -- "cuánto se espera vender" en dinero y en piezas. Sirve para fechas
+    FUTURAS (todavía sin "real"), como el bloque "Ожидается завтра" en la
+    página "Главная" -- ahí no hace falta el detalle por hora, solo el
+    total del día. None si no hay historial suficiente para pronosticar
+    ese día de semana."""
+    datos = ventas_por_hora(engine, fecha, sucursal=sucursal)
+    if not datos["n_dias_promedio"]:
+        return None
+    con_pronostico = [h for h in datos["horas"] if h["tipico"] is not None]
+    if not con_pronostico:
+        return None
+    total_tipico = sum(h["tipico"] for h in con_pronostico)
+    con_pronostico_u = [h for h in datos["horas"] if h["tipico_unidades"] is not None]
+    total_tipico_unidades = sum(h["tipico_unidades"] for h in con_pronostico_u) if con_pronostico_u else 0.0
+    return {
+        "fecha": fecha,
+        "dia_semana": datos["dia_semana"],
+        "ventas_totales": round(total_tipico, 2),
+        "unidades": round(total_tipico_unidades, 2),
     }
 
 
