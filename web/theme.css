@@ -118,8 +118,8 @@ input:focus,select:focus,textarea:focus{border-color:var(--teal);outline:3px sol
 .customer-page .profile label{color:#355643}
 
 /* Team workspace uses the same materials and visual hierarchy. */
-body.staff-page{background:radial-gradient(ellipse at 9% 0,#39786277 0,transparent 32%),radial-gradient(ellipse at 98% 86%,#76503a66 0,transparent 34%),linear-gradient(145deg,#164b3d,#0d3029 72%)}
-.staff-page .staff-header{background:#f1e3ca;border-color:#ddc7a9;box-shadow:0 12px 34px #061b16a3}
+body.staff-page{color:var(--ink);background:radial-gradient(ellipse at 8% 2%,#e2ecdc 0,transparent 34%),radial-gradient(ellipse at 95% 90%,#f3e7d9 0,transparent 36%),linear-gradient(145deg,#f9f7f0,#eef3e9 65%,#f5efe6)}
+.staff-page .staff-header{background:#f1e3ca;border-color:#ddc7a9;box-shadow:0 12px 34px #31524418}
 .staff-page .brand{color:var(--forest-deep)}
 .staff-page .brand-mark{background:#bfd0ad;color:var(--forest)}
 .staff-page .brand-wordmark small{color:var(--clay)}
@@ -141,7 +141,8 @@ body.staff-page{background:radial-gradient(ellipse at 9% 0,#39786277 0,transpare
 .staff-page.staff-signed-in .staff-tabs{background:#e9e0c9;border:1px solid #d2c4a8}
 .staff-page.staff-signed-in .staff-tabs button{color:var(--forest)}
 .staff-page.staff-signed-in .staff-tabs button.active{background:var(--forest);color:var(--paper)}
-.staff-page .staff-workspace .card{background:var(--paper);border-color:#e1cfb6;box-shadow:0 12px 32px #061c177a;color:var(--ink)}
+.staff-page .staff-workspace .card{background:var(--paper);border-color:#e1cfb6;box-shadow:0 12px 32px #3152441a;color:var(--ink)}
+
 .staff-page .staff-workspace .card h2,.staff-page .staff-workspace .card h3{color:var(--forest-deep)}
 .staff-page .staff-workspace .card .muted{color:#5b705f}
 .staff-page .staff-workspace .card .eyebrow{color:#a5654b}
@@ -151,7 +152,8 @@ body.staff-page{background:radial-gradient(ellipse at 9% 0,#39786277 0,transpare
 .staff-page .staff-workspace button:hover:not(:disabled){background:#2b6b55}
 .staff-page .staff-workspace .secondary{background:#d5e0ca;color:var(--forest)}
 .staff-page .staff-workspace .secondary:hover:not(:disabled){background:#c3d3b8}
-.staff-page #manager-view>.manager-tabs{background:#e9d8bd;border-color:#d7c2a3;box-shadow:0 12px 32px #061c177a}
+.staff-page #manager-view>.manager-tabs{background:#e9d8bd;border-color:#d7c2a3;box-shadow:0 12px 32px #3152441a}
+
 .staff-page #manager-view>.manager-tabs button{color:var(--forest)}
 .staff-page #manager-view>.manager-tabs button:hover{background:#d3ddc4}
 .staff-page #manager-view>.manager-tabs button.active{background:var(--forest);color:var(--paper)}
