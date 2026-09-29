@@ -1391,6 +1391,77 @@ def page_dashboard():
         "кофе + фраппе + остальные напитки, в любом измерении слева."
     )
 
+    # ---- Доля против выручки: когда расходятся -------------------------------
+    # Доля -- это ОТНОШЕНИЕ (категория / общие продажи), а не сама выручка,
+    # поэтому она может расти, даже когда сама категория падает в деньгах --
+    # если общие продажи упали ЕЩЁ сильнее (и наоборот: доля может падать
+    # при росте категории, если весь бизнес вырос ещё быстрее). Ни чистая
+    # доля, ни чистая выручка по отдельности (переключатель "Что показывать"
+    # выше) этого расхождения не показывают -- нужно видеть обе метрики сразу.
+    st.subheader("Доля против выручки: когда расходятся")
+    cat_combo = st.radio(
+        "Категория", _KATEGORII_NAPITKOV, index=0, horizontal=True, key="cat_combo",
+    )
+    col_ventas_combo = _MEDIDAS["Выручка, $"]["columnas"][cat_combo]
+    col_pct_combo = _MEDIDAS["Доля, % от продаж"]["columnas"][cat_combo]
+
+    barras_combo = alt.Chart(df).mark_bar(color=_COLOR_KATEGORII[cat_combo], opacity=0.5).encode(
+        x=alt.X("periodo_inicio:T", title=None,
+                axis=alt.Axis(labelExpr=f"timeFormat(datum.value, '{_formato_eje_x}')")),
+        y=alt.Y(f"{col_ventas_combo}:Q", title="Выручка, $"),
+        tooltip=[
+            alt.Tooltip("период:N", title="Период"),
+            alt.Tooltip(f"{col_ventas_combo}:Q", title="Выручка, $", format=",.0f"),
+        ],
+    )
+    linea_combo = alt.Chart(df).mark_line(point=True, strokeWidth=2.5, color=COLOR_TIPICO).encode(
+        x=alt.X("periodo_inicio:T", title=None),
+        y=alt.Y(f"{col_pct_combo}:Q", title="Доля от продаж, %"),
+        tooltip=[
+            alt.Tooltip("период:N", title="Период"),
+            alt.Tooltip(f"{col_pct_combo}:Q", title="Доля, %", format=".1f"),
+        ],
+    )
+    st.altair_chart(
+        alt.layer(barras_combo, linea_combo).resolve_scale(y="independent").properties(height=320),
+        width="stretch",
+    )
+    st.caption(
+        f"Столбики -- выручка «{cat_combo}» в деньгах (левая ось). Линия -- "
+        f"доля «{cat_combo}» от ВСЕХ продаж (правая ось, %). Если столбики "
+        f"идут вниз, а линия вверх (или наоборот) -- доля и выручка разошлись."
+    )
+
+    # Автоматический разбор расхождения -- сравнение тех же трёх темпов
+    # (категория / доля / общие продажи), что уже посчитаны выше для карточек
+    # KPI, только теперь явно проговорено словами, если знаки разошлись.
+    # Молчит, если доля и выручка двигались в одну сторону -- говорить не о
+    # чем, это не расхождение.
+    if dinero_prev is not None and dinero_prev[cat_combo] and pct_prev is not None and ventas_prev:
+        cambio_pct_cat = 100 * (dinero[cat_combo] - dinero_prev[cat_combo]) / dinero_prev[cat_combo]
+        cambio_pt_doля = pct_de_ventas[cat_combo] - pct_prev[cat_combo]
+        cambio_pct_total = 100 * (ventas_total - ventas_prev) / ventas_prev
+        # Расхождение -- если оба сдвига заметны (не шум около нуля) и в
+        # РАЗНЫЕ стороны. Пороги те же по духу, что metrics._UMBRAL_DESVIACION_PCT
+        # -- маленькие колебания не стоит подавать как значимое расхождение.
+        _UMBRAL_PT_DOLYA, _UMBRAL_PCT_CAT = 0.3, 1.0
+        if (abs(cambio_pt_doля) >= _UMBRAL_PT_DOLYA and abs(cambio_pct_cat) >= _UMBRAL_PCT_CAT
+                and (cambio_pt_doля > 0) != (cambio_pct_cat > 0)):
+            if cambio_pt_doля > 0:
+                st.warning(
+                    f"⚠️ Доля «{cat_combo}» выросла на {cambio_pt_doля:+.1f} пт, а выручка "
+                    f"«{cat_combo}» при этом упала на {cambio_pct_cat:.1f}% -- дело не в росте "
+                    f"«{cat_combo}», а в том, что ОБЩИЕ продажи упали ещё сильнее "
+                    f"({cambio_pct_total:+.1f}%)."
+                )
+            else:
+                st.warning(
+                    f"⚠️ Доля «{cat_combo}» упала на {cambio_pt_doля:.1f} пт, хотя выручка "
+                    f"«{cat_combo}» выросла на {cambio_pct_cat:+.1f}% -- «{cat_combo}» не "
+                    f"проседает, просто ОБЩИЕ продажи выросли ещё быстрее "
+                    f"({cambio_pct_total:+.1f}%)."
+                )
+
     # ---- Когда именно продаются напитки: по часам дня -----------------------
     # Отвечает не на "сколько", а на "в какое время" -- та же идея, что
     # температура в присланном примере (жара -> тянет на холодное), только
