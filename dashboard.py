@@ -317,6 +317,21 @@ def _cache_analisis_abc(_engine, sucursal, desde, hasta):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_platillos_en_tendencia(_engine, sucursal):
+    return metrics.platillos_en_tendencia(_engine, sucursal=sucursal)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_platillos_acompanantes(_engine, sucursal, platillo, desde, hasta):
+    return metrics.platillos_acompanantes(_engine, sucursal, platillo, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_patron_semana_por_hora(_engine, sucursal, desde, hasta):
+    return metrics.patron_semana_por_hora(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_ventas_por_categoria(_engine, sucursal, desde, hasta):
     return metrics.ventas_por_categoria(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
@@ -1787,6 +1802,92 @@ def page_top_productos():
             "специально под это меню."
         )
 
+    # ---- Растущие/падающие позиции ------------------------------------------
+    # ABC выше -- фотография (какие позиции вообще что-то значат). Это --
+    # кино: что меняется ПРЯМО СЕЙЧАС, за последние 2 недели против
+    # предыдущих 2 -- раньше, чем изменение станет заметно в ABC за месяц.
+    st.subheader("Растущие и падающие позиции")
+    tendencia = _cache_platillos_en_tendencia(engine, sucursal_filtro)
+    st.caption(
+        f"{tendencia['desde_actual']} — {tendencia['hasta_actual']} против "
+        f"{tendencia['desde_pasado']} — {tendencia['hasta_pasado']} "
+        f"({tendencia['dias']} дней против {tendencia['dias']} дней), только "
+        f"позиции классов A и B (см. ABC-анализ выше) -- чтобы редкая "
+        f"позиция с парой лишних продаж не попала в список как "
+        f"«взлетевшая»."
+    )
+    col_sube, col_baja = st.columns(2)
+    with col_sube:
+        st.write("📈 **Растут**")
+        if tendencia["subiendo"]:
+            st.dataframe(
+                pd.DataFrame(tendencia["subiendo"]).rename(columns={
+                    "platillo": "Позиция", "ventas_actual": "Сейчас, $",
+                    "ventas_pasada": "Было, $", "cambio_pct": "Изменение, %",
+                }),
+                width="stretch", hide_index=True,
+            )
+        else:
+            st.caption("Нет позиций с заметным ростом за этот период.")
+    with col_baja:
+        st.write("📉 **Падают**")
+        if tendencia["bajando"]:
+            st.dataframe(
+                pd.DataFrame(tendencia["bajando"]).rename(columns={
+                    "platillo": "Позиция", "ventas_actual": "Сейчас, $",
+                    "ventas_pasada": "Было, $", "cambio_pct": "Изменение, %",
+                }),
+                width="stretch", hide_index=True,
+            )
+        else:
+            st.caption("Нет позиций с заметным падением за этот период.")
+
+    # ---- С чем покупают вместе (анализ чека) --------------------------------
+    st.subheader("С чем покупают вместе")
+    if sucursal_filtro is None:
+        st.info(
+            "Выбери конкретную точку в фильтрах слева -- номер чека не "
+            "уникален МЕЖДУ точками, поэтому этот разбор считается только "
+            "для одной точки за раз."
+        )
+    else:
+        platillo_elegido = st.selectbox(
+            "Позиция", [t["platillo"] for t in top], index=0, key="top_acomp_platillo",
+        )
+        # Свои последние 90 дней, а не весь диапазон дат слева -- запрос
+        # это самосоединение таблицы чеков (см. platillos_acompanantes), и
+        # на популярной позиции по ВСЕЙ истории это ощутимо медленнее без
+        # пользы: свежие 90 дней и так показывают актуальную картину, кто с
+        # кем сейчас продаётся (тот же принцип окна, что и в
+        # plan_tarea_dia/_DIAS_HISTORIA_PLAN_TAREA в metrics.py).
+        hasta_acomp = min(hasta, tiempo.hoy() - dt.timedelta(days=1))
+        desde_acomp = hasta_acomp - dt.timedelta(days=89)
+        acomp = _cache_platillos_acompanantes(
+            engine, sucursal_filtro, platillo_elegido,
+            desde_acomp.isoformat(), hasta_acomp.isoformat(),
+        )
+        if acomp is None or not acomp["acompanantes"]:
+            st.info("Недостаточно данных за последние 90 дней для этой позиции.")
+        else:
+            st.caption(
+                f"Из {acomp['n_tickets_total']:,} чеков с «{platillo_elegido}» "
+                f"за последние 90 дней ({desde_acomp.isoformat()} — "
+                f"{hasta_acomp.isoformat()}) -- вот что чаще всего лежало рядом:"
+            )
+            st.dataframe(
+                pd.DataFrame(acomp["acompanantes"]).rename(columns={
+                    "platillo": "Позиция", "n_tickets_juntos": "Чеков вместе",
+                    "pct_de_tickets": "Доля чеков, %",
+                }),
+                width="stretch", hide_index=True,
+            )
+            st.caption(
+                "Доля чеков, % -- какая часть чеков с выбранной позицией "
+                "включала и эту тоже. Подсказка для допродажи на кассе, "
+                "не правило -- совпадение в чеке не значит, что одно "
+                "подтолкнуло купить другое."
+            )
+
 
 # =============================================================================
 # Страница "Планирование" -- Panadería: реальные продажи, прогноз и план
@@ -2135,6 +2236,41 @@ def page_planificacion():
             f"PERSONAL_ENTRE_SEMANA / PERSONAL_DOMINGO в metrics.py."
         )
 
+    # ---- Карта загруженности (день недели × час) ----------------------------
+    # В отличие от остальной страницы (только Panadería), здесь -- ВЕСЬ
+    # чек целиком: решение по персоналу на кассе/зале в целом, не только
+    # по производству выпечки.
+    st.subheader("Карта загруженности (день недели × час)")
+    st.caption(
+        "Все категории меню (не только Panadería) -- для решений по "
+        "персоналу в целом, за выбранный диапазон дат слева."
+    )
+    heatmap_datos = _cache_patron_semana_por_hora(
+        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+    )
+    df_heatmap = pd.DataFrame(heatmap_datos)
+    df_heatmap = df_heatmap[df_heatmap["ventas"] > 0]
+    if df_heatmap.empty:
+        st.info("Для этого диапазона нет строк с временем чека (hora_cierre).")
+    else:
+        grafico_heatmap = alt.Chart(df_heatmap).mark_rect().encode(
+            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("dia_semana:N", title=None, sort=metrics.DIAS_SEMANA_RU),
+            color=alt.Color("ventas:Q", title="Выручка, $", scale=alt.Scale(scheme="oranges")),
+            tooltip=[
+                alt.Tooltip("dia_semana:N", title="День"),
+                alt.Tooltip("hora:O", title="Час"),
+                alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+                alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+            ],
+        ).properties(height=280)
+        st.altair_chart(grafico_heatmap, width="stretch")
+        st.caption(
+            "Сумма выручки по (день недели, час) за весь выбранный "
+            "диапазон дат -- где сейчас гуще всего, а где почти пусто, "
+            "одним взглядом на всю неделю."
+        )
+
     # ---- Почему прогноз расходится с фактом ----------------------------------
     # Арифметика, не рассказ про причины бизнеса (см. docstring
     # analizar_desviacion_produccion) -- тренд (все дни сместились
@@ -2192,6 +2328,49 @@ def page_planificacion():
             "праздников и по погоде в Сан-Луис-Потоси (см. выше, если "
             "совпало); другие причины -- акция, локальное событие -- в "
             "данных не видны."
+        )
+
+    # ---- Точность прогноза во времени ----------------------------------------
+    # Раздел выше суммирует ВЕСЬ диапазон разом. Здесь -- день за днём:
+    # не съезжает ли сам прогноз со временем (например, если продажи
+    # разгоняются быстрее, чем модель успевает подстроиться).
+    st.subheader("Точность прогноза во времени")
+    precision = metrics.precision_pronostico(dias_para_analisis)
+    if precision is None:
+        st.info("Пока недостаточно закрытых дней с прогнозом, чтобы посчитать точность.")
+    else:
+        col_mape, col_ant, col_rec = st.columns(3)
+        col_mape.metric("Средняя ошибка (MAPE)", f"{precision['mape']:.1f}%")
+        col_ant.metric("1-я половина периода", f"{precision['mape_anterior']:.1f}%")
+        col_rec.metric("2-я половина периода", f"{precision['mape_reciente']:.1f}%")
+        if precision["mape_reciente"] > precision["mape_anterior"] * 1.2:
+            st.write(
+                "⚠️ В последнее время прогноз ошибается заметно больше, чем "
+                "раньше -- возможно, продажи меняются быстрее, чем модель "
+                "успевает подстроиться (см. «тренд» в разделе выше)."
+            )
+        df_precision = pd.DataFrame(precision["serie"])
+        grafico_precision = alt.Chart(df_precision).mark_bar().encode(
+            x=alt.X("fecha:T", title="Дата"),
+            y=alt.Y("error_pct:Q", title="Ошибка прогноза, %"),
+            color=alt.condition(
+                alt.datum.error_pct >= 0, alt.value(COLOR_SECUNDARIO), alt.value(COLOR_PRIMARIO),
+            ),
+            tooltip=[
+                alt.Tooltip("fecha:T", title="Дата"),
+                alt.Tooltip("real:Q", title="Факт, шт", format=",.0f"),
+                alt.Tooltip("pronostico:Q", title="Прогноз, шт", format=",.0f"),
+                alt.Tooltip("error_pct:Q", title="Ошибка, %", format="+.1f"),
+            ],
+        ).properties(height=220)
+        st.altair_chart(grafico_precision, width="stretch")
+        st.caption(
+            "MAPE -- средняя абсолютная ошибка прогноза в процентах "
+            "(стандартная метрика точности прогноза, не придумана для "
+            "этого бизнеса). Столбики выше нуля -- продали больше "
+            "прогноза, ниже -- меньше; большая ошибка сама по себе -- не "
+            "всегда плохо, если она в основном со знаком «плюс» (бизнес "
+            "растёт быстрее модели) -- смотри вместе с разделом выше."
         )
 
 

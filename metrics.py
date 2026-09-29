@@ -572,6 +572,142 @@ def analisis_abc(engine: Engine, sucursal: str | None = None, desde: str | None 
     }
 
 
+# Ventana usada para comparar "ahora" contra "antes" en platillos_en_tendencia
+# -- 14 días (dos semanas completas) en vez de 7: una sola semana es más
+# sensible a qué día cayó un feriado o un clima raro; dos semanas promedian
+# ese ruido sin diluir tanto el cambio real como para dejar de verlo.
+_DIAS_TENDENCIA = 14
+
+
+def platillos_en_tendencia(engine: Engine, sucursal: str | None = None, hasta: str | None = None,
+                            dias: int = _DIAS_TENDENCIA, n: int = 8) -> dict:
+    """¿Qué posiciones de menú están CRECIENDO o CAYENDO ahora mismo,
+    comparando los últimos `dias` días contra los `dias` inmediatamente
+    anteriores? -- pregunta que analisis_abc (arriba) no contesta: ABC es
+    una foto fija de todo el rango (qué posiciones pesan), esto es la
+    PELÍCULA (qué posiciones están cambiando de peso ahora mismo, antes de
+    que el cambio se note en el ABC del mes completo).
+
+    Solo se consideran posiciones de clase A o B (ver analisis_abc) sobre
+    la ventana combinada -- una posición de clase C (cola larga, casi sin
+    venta) puede mostrar un cambio de +300% con una sola venta de más, sin
+    que signifique nada para el negocio; filtrar a A/B deja solo cambios
+    que sí pesan en la caja."""
+    hasta_date = dt.date.fromisoformat(hasta) if hasta else (tiempo.hoy() - dt.timedelta(days=1))
+    fin_actual = hasta_date
+    ini_actual = fin_actual - dt.timedelta(days=dias - 1)
+    fin_pasado = ini_actual - dt.timedelta(days=1)
+    ini_pasado = fin_pasado - dt.timedelta(days=dias - 1)
+
+    abc = analisis_abc(engine, sucursal=sucursal, desde=ini_pasado.isoformat(), hasta=fin_actual.isoformat())
+    relevantes = {d["platillo"] for d in abc["detalle"] if d["clase"] in ("A", "B")}
+
+    sql = (
+        "SELECT platillo, "
+        "SUM(CASE WHEN fecha >= :ini_actual THEN importe ELSE 0 END) AS ventas_actual, "
+        "SUM(CASE WHEN fecha < :ini_actual THEN importe ELSE 0 END) AS ventas_pasada "
+        "FROM sales_lines WHERE fecha >= :ini_pasado AND fecha <= :fin_actual"
+    )
+    params: dict = {
+        "ini_actual": ini_actual.isoformat(), "ini_pasado": ini_pasado.isoformat(),
+        "fin_actual": fin_actual.isoformat(),
+    }
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    sql += " GROUP BY platillo"
+
+    filas = []
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            clave = row["platillo"] or "(без названия)"
+            if clave not in relevantes:
+                continue
+            ventas_actual = row["ventas_actual"] or 0.0
+            ventas_pasada = row["ventas_pasada"] or 0.0
+            cambio_pct = _delta_pct(ventas_actual, ventas_pasada)
+            if cambio_pct is None:
+                continue
+            filas.append({
+                "platillo": clave,
+                "ventas_actual": round(ventas_actual, 2),
+                "ventas_pasada": round(ventas_pasada, 2),
+                "cambio_pct": cambio_pct,
+            })
+
+    filas.sort(key=lambda f: f["cambio_pct"], reverse=True)
+    subiendo = [f for f in filas if f["cambio_pct"] > 0][:n]
+    bajando = sorted((f for f in filas if f["cambio_pct"] < 0), key=lambda f: f["cambio_pct"])[:n]
+
+    return {
+        "desde_actual": ini_actual.isoformat(), "hasta_actual": fin_actual.isoformat(),
+        "desde_pasado": ini_pasado.isoformat(), "hasta_pasado": fin_pasado.isoformat(),
+        "dias": dias, "subiendo": subiendo, "bajando": bajando,
+    }
+
+
+def platillos_acompanantes(engine: Engine, sucursal: str, platillo: str, desde: str | None = None,
+                            hasta: str | None = None, n: int = 8) -> dict | None:
+    """Con qué OTRAS posiciones aparece más seguido `platillo` en el MISMO
+    chequeo (ticket) -- pregunta que ningún top de ventas por separado
+    contesta, porque esos miran cada posición sola, no el chequeo
+    completo. Sirve para sugerencias de venta cruzada en mostrador
+    ("¿le agrego un X?").
+
+    Requiere UNA sucursal concreta (no None/"todas") -- el número de
+    chequeo (movimiento_pdv) es único DENTRO de una sucursal pero se
+    repite ENTRE sucursales (ver comentario en db.py, tabla sales_lines);
+    mezclar las dos sin distinguir juntaría, por accidente, chequeos de
+    negocios distintos que comparten número.
+
+    Self-join agregado en SQL (no fila por fila en Python) -- mismo motivo
+    que el resto de funciones sobre esta tabla: cientos de miles de filas
+    es demasiado para traer completas solo para contar coincidencias."""
+    sql_total = (
+        "SELECT COUNT(DISTINCT movimiento_pdv) AS n FROM sales_lines "
+        "WHERE sucursal = :sucursal AND platillo = :platillo AND movimiento_pdv IS NOT NULL"
+    )
+    params_total: dict = {"sucursal": sucursal, "platillo": platillo}
+    if desde:
+        sql_total += " AND fecha >= :desde"
+        params_total["desde"] = desde
+    if hasta:
+        sql_total += " AND fecha <= :hasta"
+        params_total["hasta"] = hasta
+
+    sql_juntos = (
+        "SELECT b.platillo AS platillo, COUNT(DISTINCT a.movimiento_pdv) AS n_tickets "
+        "FROM sales_lines a JOIN sales_lines b "
+        "ON a.sucursal = b.sucursal AND a.movimiento_pdv = b.movimiento_pdv "
+        "WHERE a.sucursal = :sucursal AND a.platillo = :platillo "
+        "AND a.movimiento_pdv IS NOT NULL AND b.platillo != :platillo"
+    )
+    params_juntos: dict = {"sucursal": sucursal, "platillo": platillo}
+    if desde:
+        sql_juntos += " AND a.fecha >= :desde"
+        params_juntos["desde"] = desde
+    if hasta:
+        sql_juntos += " AND a.fecha <= :hasta"
+        params_juntos["hasta"] = hasta
+    sql_juntos += " GROUP BY b.platillo"
+
+    with engine.connect() as conn:
+        n_tickets_total = conn.execute(text(sql_total), params_total).scalar_one()
+        if not n_tickets_total:
+            return None
+        filas = [
+            {
+                "platillo": row["platillo"] or "(без названия)",
+                "n_tickets_juntos": row["n_tickets"],
+                "pct_de_tickets": round(100 * row["n_tickets"] / n_tickets_total, 1),
+            }
+            for row in conn.execute(text(sql_juntos), params_juntos).mappings()
+        ]
+
+    filas.sort(key=lambda f: f["n_tickets_juntos"], reverse=True)
+    return {"platillo": platillo, "n_tickets_total": n_tickets_total, "acompanantes": filas[:n]}
+
+
 def serie_dia_por_sucursal(engine: Engine, desde: str, hasta: str) -> list[dict]:
     """Ventas totales por DÍA y por SUCURSAL en el rango -- para comparar
     la TENDENCIA de cada punto lado a lado (no solo un día, como
@@ -587,6 +723,60 @@ def serie_dia_por_sucursal(engine: Engine, desde: str, hasta: str) -> list[dict]
         ]
     filas.sort(key=lambda r: (r["fecha"], r["sucursal"]))
     return filas
+
+
+def patron_semana_por_hora(engine: Engine, sucursal: str | None = None, desde: str | None = None,
+                            hasta: str | None = None) -> list[dict]:
+    """Ventas y unidades sumadas por (día de semana, hora), con TODAS las
+    categorías del menú -- la matriz completa de tráfico (mapa de calor),
+    no un patrón promedio de un solo día como patron_horario_bebidas o
+    patron_horario_panaderia (esas son por categoría; esta es el negocio
+    completo, pensada para decidir HORARIOS DE PERSONAL, no producción de
+    una sola categoría). Requiere hora_cierre -- igual que el resto de
+    patrones por hora, filas viejas sin hora quedan fuera.
+
+    Agregado en el SQL por (fecha, hora) primero -- no directo por (día de
+    semana, hora): eso necesitaría una función de fecha específica de cada
+    motor (Postgres vs SQLite). Agregar por fecha es portable y ya reduce
+    de cientos de miles de filas a unos pocos miles antes de clasificar el
+    día de semana en Python (mismo truco que patron_horario_panaderia)."""
+    sql = (
+        "SELECT fecha, SUBSTR(hora_cierre, 12, 2) AS hora_str, "
+        "SUM(importe) AS ventas, SUM(cantidad) AS unidades "
+        "FROM sales_lines WHERE hora_cierre IS NOT NULL AND hora_cierre != ''"
+    )
+    params: dict = {}
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    if desde:
+        sql += " AND fecha >= :desde"
+        params["desde"] = desde
+    if hasta:
+        sql += " AND fecha <= :hasta"
+        params["hasta"] = hasta
+    sql += " GROUP BY fecha, SUBSTR(hora_cierre, 12, 2)"
+
+    ventas: dict[tuple[int, int], float] = defaultdict(float)
+    unidades: dict[tuple[int, int], float] = defaultdict(float)
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            try:
+                hora = int(row["hora_str"])
+            except (ValueError, TypeError):
+                continue
+            weekday = dt.date.fromisoformat(row["fecha"]).weekday()
+            ventas[(weekday, hora)] += row["ventas"]
+            unidades[(weekday, hora)] += row["unidades"]
+
+    return [
+        {
+            "dia_semana_idx": wd, "dia_semana": DIAS_SEMANA_RU[wd], "hora": h,
+            "ventas": round(ventas.get((wd, h), 0.0), 2),
+            "unidades": round(unidades.get((wd, h), 0.0), 2),
+        }
+        for wd in range(7) for h in range(24)
+    ]
 
 
 def ventas_por_categoria(engine: Engine, sucursal: str | None = None, desde: str | None = None,
@@ -1356,6 +1546,50 @@ def analizar_desviacion_produccion(dias: list[dict], campo: str) -> dict | None:
         "peor_dia_real": round(peor["real_unidades"], 0),
         "peor_dia_comparado": round(peor[campo], 0),
         "festivo_peor_dia": festivo_peor_dia,
+    }
+
+
+def precision_pronostico(dias: list[dict], campo_pronostico: str = "pronostico_unidades",
+                          campo_real: str = "real_unidades") -> dict | None:
+    """Qué tan preciso viene siendo el pronóstico DÍA A DÍA -- a diferencia
+    de analizar_desviacion_produccion (arriba), que suma TODO el rango y
+    solo distingue "tendencia sostenida" de "un día puntual", esto mide el
+    error de CADA día por separado con MAPE (error porcentual absoluto
+    medio -- métrica estándar de pronóstico, no inventada para este
+    negocio) y parte la serie en dos mitades para ver si el modelo viene
+    ERRANDO MÁS en las semanas recientes que antes -- un promedio único
+    puede esconder un empeoramiento reciente detrás de meses viejos donde
+    acertaba mejor.
+
+    Recibe cualquier lista de dicts con fecha/`campo_real`/`campo_pronostico`
+    -- pensada para el resultado de panaderia_real_y_pronostico, pero sin
+    depender de él (función pura, sin acceso a la base)."""
+    con_ambos = [
+        d for d in dias
+        if d.get(campo_real) is not None and d.get(campo_pronostico) not in (None, 0)
+    ]
+    if not con_ambos:
+        return None
+
+    serie = []
+    for d in con_ambos:
+        real = d[campo_real]
+        pron = d[campo_pronostico]
+        serie.append({
+            "fecha": d["fecha"], "real": real, "pronostico": pron,
+            "error_pct": round(100 * (real - pron) / pron, 1),
+        })
+
+    mape = sum(abs(f["error_pct"]) for f in serie) / len(serie)
+    mitad = len(serie) // 2
+    primera, segunda = serie[:mitad] or serie, serie[mitad:] or serie
+
+    return {
+        "n_dias": len(serie),
+        "mape": round(mape, 1),
+        "mape_anterior": round(sum(abs(f["error_pct"]) for f in primera) / len(primera), 1),
+        "mape_reciente": round(sum(abs(f["error_pct"]) for f in segunda) / len(segunda), 1),
+        "serie": serie,
     }
 
 
