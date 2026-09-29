@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#123a30"><meta name="description" content="El Molino Club: puntos y recompensas para cada visita.">
-  <link rel="manifest" href="./manifest.webmanifest"><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./theme.css"><title>El Molino Club</title>
+  <link rel="manifest" href="./manifest.webmanifest"><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./theme.css?v=20"><title>El Molino Club</title>
 </head>
 <body class="customer-page">
   <main class="shell">
@@ -34,7 +34,7 @@
 
     <section id="club-view" hidden>
       <div class="welcome"><div><p class="eyebrow">TU ESPACIO EN EL MOLINO</p><h1>Hola, <span id="customer-name"></span><span class="welcome-dot">.</span></h1><p class="muted">Qué gusto tenerte de vuelta.</p></div><button id="logout" class="link">Cerrar sesión</button></div>
-      <article class="points-card"><div class="points-art" aria-hidden="true"><i></i><i></i><i></i></div><div class="points-content"><p class="eyebrow">TU TARJETA DEL CLUB</p><span class="points-label">Puntos disponibles</span><strong id="points-balance">0</strong><span class="points-hint">Cada visita te acerca a algo delicioso.</span></div><div class="points-stamp">EL<br>MOLINO<br>CLUB</div></article>
+      <article class="points-card"><div class="points-art" aria-hidden="true"><i></i><i></i><i></i></div><div class="points-content"><p class="eyebrow">TU TARJETA DEL CLUB</p><span class="points-label">Puntos disponibles</span><strong id="points-balance">0</strong><span class="points-hint">Cada visita te acerca a algo delicioso.</span><button id="show-member-qr" type="button" class="club-qr-button">Mostrar mi QR</button><p id="member-qr-message" class="club-qr-message" role="status"></p><div id="member-qr-panel" class="club-qr-panel" hidden><img id="member-qr-image" alt="QR de mi tarjeta del Club"><p>Muéstralo al personal antes de sumar puntos.</p></div></div><div class="points-stamp">EL<br>MOLINO<br>CLUB</div></article>
       <nav class="section-nav" aria-label="Secciones del club"><a href="#campaign-section">Para ti</a><a href="#rewards-section">Rewards</a><a href="#purchases-section">Tus compras</a><a href="#redemptions-section">Tus canjes</a><a href="#profile-section">Tu perfil</a></nav>
       <div class="club-grid"><div class="club-main">
         <section id="campaign-section" class="content-section" hidden><div class="section-heading"><div><p class="eyebrow">SELECCIONADO PARA TI</p><h2>Algo especial</h2></div><span class="section-rule" aria-hidden="true"></span></div><div id="campaigns" class="campaigns"></div></section>

@@ -19,7 +19,7 @@
     </style>
     <link rel="stylesheet" href="./styles.css">
     <link rel="stylesheet" href="./staff.css">
-    <link rel="stylesheet" href="./theme.css?v=19">
+    <link rel="stylesheet" href="./theme.css?v=20">
     <script src="./staff-i18n.js" defer></script>
     <script src="./staff.js" defer></script>
   </head>
@@ -42,8 +42,8 @@
               <button>Buscar cliente</button>
             </form>
             <p id="lookup-message" class="message" role="status"></p>
-            <div id="cashier-customer" hidden><strong id="cashier-name"></strong><p><span id="cashier-points"></span> puntos · <span id="cashier-id"></span></p></div>
-            <div id="cashier-purchases" hidden><h3>Últimos tickets</h3><p id="cashier-purchases-message" class="message" role="status"></p><div id="cashier-purchases-list" class="cashier-purchases-list"></div></div>
+            <div id="cashier-customer" hidden><strong id="cashier-name"></strong><p><span id="cashier-points"></span> puntos</p></div>
+            <details id="cashier-purchases" class="cashier-history" hidden><summary>Últimos tickets</summary><p id="cashier-purchases-message" class="message" role="status"></p><div id="cashier-purchases-list" class="cashier-purchases-list"></div></details>
           </section>
           <section id="new-customer-section" class="card" hidden>
             <p class="eyebrow">NUEVO CLIENTE</p><h2>Registrar al Club</h2>
@@ -57,22 +57,32 @@
             <p id="new-customer-message" class="message" role="status"></p>
           </section>
           <section id="purchase-section" class="card" hidden>
-            <p class="eyebrow">REGISTRO DE VENTA</p><h2>Registrar compra</h2>
-            <form id="purchase-form">
-              <label for="ticket">Número de ticket</label><div class="ticket-lookup-row"><input id="ticket" required maxlength="120"><button id="load-wansoft-ticket" type="button" class="secondary">Buscar en Wansoft</button></div>
+            <p class="eyebrow">REGISTRO DE VENTA</p><h2>Sumar puntos</h2>
+            <p class="muted">Introduce el número del ticket y el total pagado. Cada peso completo suma un punto.</p>
+            <form id="quick-purchase-form">
+              <div class="two-fields"><label for="quick-ticket">Número de ticket<input id="quick-ticket" required maxlength="120" autocomplete="off"></label><label for="quick-amount">Total pagado (MXN)<input id="quick-amount" type="number" min="0.01" step="0.01" inputmode="decimal" required></label></div>
+              <button id="quick-purchase-submit">Sumar puntos</button>
+            </form>
+            <div class="ticket-lookup" hidden>
+              <label for="ticket">Número de ticket</label><div class="ticket-lookup-row"><input id="ticket" required maxlength="120" inputmode="numeric"><button id="load-wansoft-ticket" type="button" class="secondary">Buscar en Wansoft</button></div>
               <div id="wansoft-preview" class="wansoft-preview" hidden><strong>Ticket encontrado</strong><p id="wansoft-summary"></p><ul id="wansoft-items"></ul><button id="assign-wansoft-ticket" type="button">Asignar puntos de este ticket</button></div>
               <p id="wansoft-message" class="message" role="status"></p>
-              <div id="purchase-items" class="purchase-items"></div>
-              <button id="add-purchase-item" type="button" class="secondary">+ Añadir producto</button>
-              <p class="purchase-total">Total del ticket <output id="purchase-total">0.00 MXN</output></p>
-              <button id="purchase-submit">Registrar ticket</button>
+            </div>
+            <form id="purchase-form" hidden>
+              <details id="manual-entry" class="manual-entry" hidden><summary>Registro manual · solo gerencia</summary>
+                <p class="muted">Úsalo si el reporte Wansoft todavía no incluye este ticket. La revisión de tickets marcará esta compra hasta que se importe el reporte.</p>
+                <div id="purchase-items" class="purchase-items"></div>
+                <button id="add-purchase-item" type="button" class="secondary">+ Añadir producto</button>
+                <p class="purchase-total">Total del ticket <output id="purchase-total">0.00 MXN</output></p>
+                <button id="purchase-submit">Registrar ticket manualmente</button>
+              </details>
             </form>
             <template id="purchase-item-template"><div class="purchase-item">
               <div class="purchase-item-heading"><strong>Producto</strong><button type="button" class="remove-purchase-item">Quitar</button></div>
               <label>Nombre del producto<input class="item-product" required maxlength="180"></label>
               <div class="two-fields"><label>Cantidad<input class="item-quantity" type="number" min="0.001" step="0.001" value="1" required></label><label>Precio unitario (MXN)<input class="item-price" type="number" min="0" step="0.01" required></label></div>
             </div></template>
-            <p class="muted">Revisa que el total coincida con el ticket antes de registrarlo.</p>
+            <p class="muted">Un número de ticket se acredita una sola vez. Comprueba el importe antes de confirmar.</p>
             <p id="purchase-message" class="message" role="status"></p>
           </section>
           </div>
@@ -85,8 +95,8 @@
         </div>
 
         <div id="manager-view" class="staff-view" hidden>
-          <nav class="manager-tabs" aria-label="Herramientas de gerencia"><button type="button" class="active" data-manager-view="overview-section" data-permission="overview" aria-pressed="true">Inicio</button><button type="button" data-manager-view="manager-section" data-permission="analytics" aria-pressed="false">Clientes</button><button type="button" data-manager-view="reconciliation-section" data-permission="analytics" aria-pressed="false">Tickets</button><button type="button" data-manager-view="rewards-section" data-permission="rewards" aria-pressed="false">Recompensas</button><button type="button" data-manager-view="campaigns-section" data-permission="campaigns" aria-pressed="false">Campañas</button><button type="button" data-manager-view="team-section" data-permission="owner" aria-pressed="false">Equipo</button></nav>
-          <section id="overview-section" class="card"><p class="eyebrow">CENTRO DE CONTROL</p><h2>Programa de puntos</h2><p class="muted">Todo el recorrido del Club en un lugar: clientes, tickets, recompensas, campañas y equipo.</p><div class="overview-grid"><button type="button" data-jump-manager="manager-section" data-permission="analytics"><span>01 · CLIENTES</span><strong>Conoce a tu comunidad</strong><small>Segmentos y recomendaciones →</small></button><button type="button" data-jump-manager="reconciliation-section" data-permission="analytics"><span>02 · TICKETS</span><strong>Comprueba los puntos</strong><small>Ventas y diferencias Wansoft →</small></button><button type="button" data-jump-manager="rewards-section" data-permission="rewards"><span>03 · RECOMPENSAS</span><strong>Gestiona el catálogo</strong><small><span id="overview-reward-count">Ver recompensas</span> →</small></button><button type="button" data-jump-manager="campaigns-section" data-permission="campaigns"><span>04 · CAMPAÑAS</span><strong>Vuelve a conectar</strong><small>Borradores y envíos →</small></button><button type="button" data-jump-manager="team-section" data-permission="owner"><span>05 · EQUIPO</span><strong>Controla el acceso</strong><small>Permisos y acciones →</small></button></div></section>
+          <nav class="manager-tabs" aria-label="Herramientas de gerencia"><button type="button" class="active" data-manager-view="overview-section" data-permission="overview" aria-pressed="true">Inicio</button><button type="button" data-manager-view="manager-section" data-permission="analytics" aria-pressed="false">Clientes</button><button type="button" data-manager-view="rewards-section" data-permission="rewards" aria-pressed="false">Recompensas</button><button type="button" data-manager-view="campaigns-section" data-permission="campaigns" aria-pressed="false">Campañas</button><button type="button" data-manager-view="team-section" data-permission="owner" aria-pressed="false">Equipo</button></nav>
+          <section id="overview-section" class="card"><p class="eyebrow">CENTRO DE CONTROL</p><h2>Programa de puntos</h2><p class="muted">Todo el recorrido del Club en un lugar: clientes, tickets, recompensas, campañas y equipo.</p><div class="overview-grid"><button type="button" data-jump-manager="manager-section" data-permission="analytics"><span>01 · CLIENTES</span><strong>Conoce a tu comunidad</strong><small>Segmentos y recomendaciones →</small></button><button type="button" data-jump-manager="rewards-section" data-permission="rewards"><span>03 · RECOMPENSAS</span><strong>Gestiona el catálogo</strong><small><span id="overview-reward-count">Ver recompensas</span> →</small></button><button type="button" data-jump-manager="campaigns-section" data-permission="campaigns"><span>04 · CAMPAÑAS</span><strong>Vuelve a conectar</strong><small>Borradores y envíos →</small></button><button type="button" data-jump-manager="team-section" data-permission="owner"><span>05 · EQUIPO</span><strong>Controla el acceso</strong><small>Permisos y acciones →</small></button></div></section>
           <section id="manager-section" class="card">
             <p class="eyebrow">CONOCE A TUS CLIENTES</p><h2>Clientes</h2>
             <label for="segment">Segmento</label><select id="segment"><option value="new">Nuevos</option><option value="active">Activos</option><option value="loyal">Frecuentes</option><option value="at_risk">En riesgo</option></select>
