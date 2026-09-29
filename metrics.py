@@ -29,13 +29,15 @@ CAFETERIA_TIPOS = {"CAFETERIA", "FRAPPES"}
 # que "Напитки" cubra TODA bebida del menú, no solo CAFETERIA/FRAPPES.
 OTRAS_BEBIDAS_TIPOS = {"CAFETERIA", "REFRESCOS"}
 
-# Posiciones de PANADERIA que en realidad son empaque (bolsas), no
-# producto -- se venden a $0 y no consumen tiempo de horneado/decoración
-# de nadie. Cuentan como PANADERIA en tipo_grupo pero deben quedar FUERA
-# de cualquier análisis de esa categoría (unidades reales, pronóstico,
-# top de posiciones, personal por hora) -- si no, inflan las unidades sin
-# representar trabajo real.
-PANADERIA_EXCLUIR_SQL = " AND platillo NOT LIKE 'BOLSA%'"
+# "Bolsa*" -- decisión explícita de Roman: TODA posición que empiece con
+# "Bolsa" queda fuera del análisis por posición de menú, sin excepción --
+# incluidas las que sí tienen venta real (BOLSA MERENGUES, BOLSA GALLETA
+# NUEZ 7 PZ, BOLSA ALGODON CON ASA...), no solo el empaque gratis (BOLSA
+# #3/#8/#16, BOLSA BLANCA *, BOLSA CELOFAN *). No son el foco del negocio
+# (pan/pastelería/café) y su presencia en ABC/top/tendencias/canasta solo
+# distrae. Se usa en TODAS las consultas por posición de menú, no solo en
+# Panadería (donde antes vivía este filtro, bajo otro nombre).
+EXCLUIR_BOLSA_SQL = " AND platillo NOT LIKE 'BOLSA%'"
 
 # "Сегодня" здесь НИКОГДА не берётся из часов компьютера -- только из
 # tiempo.hoy(), то есть по времени Сан-Луис-Потоси. Почему так и что
@@ -602,9 +604,11 @@ def _filtro_rango_sql(sucursal, desde, hasta):
 def top_platillos(engine: Engine, sucursal: str | None = None, desde: str | None = None,
                    hasta: str | None = None, n: int = 15) -> list[dict]:
     """Posiciones de menú más vendidas por ingresos, dentro del rango de
-    fechas (todas las categorías, no solo café -- 'ventas completas')."""
+    fechas (todas las categorías, no solo café -- 'ventas completas').
+    Excluye "Bolsa*" (ver EXCLUIR_BOLSA_SQL) -- no son el foco del
+    negocio, decisión explícita de Roman."""
     where, params = _filtro_rango_sql(sucursal, desde, hasta)
-    sql = "SELECT platillo, tipo_grupo, importe, cantidad FROM sales_lines" + where
+    sql = "SELECT platillo, tipo_grupo, importe, cantidad FROM sales_lines" + where + EXCLUIR_BOLSA_SQL
 
     ventas = defaultdict(float)
     unidades = defaultdict(float)
@@ -634,11 +638,14 @@ def analisis_abc(engine: Engine, sucursal: str | None = None, desde: str | None 
     no inventados para este negocio: A = hasta 80% acumulado, B = 80-95%,
     C = el resto.
 
+    Excluye "Bolsa*" (ver EXCLUIR_BOLSA_SQL) -- no son el foco del
+    negocio, decisión explícita de Roman.
+
     Agregado en SQL (GROUP BY platillo), no fila por fila -- mismo motivo
     que el resto de funciones de este archivo con tablas grandes."""
     where, params = _filtro_rango_sql(sucursal, desde, hasta)
     sql = ("SELECT platillo, SUM(importe) AS ventas, SUM(cantidad) AS unidades "
-           "FROM sales_lines" + where + " GROUP BY platillo")
+           "FROM sales_lines" + where + EXCLUIR_BOLSA_SQL + " GROUP BY platillo")
     with engine.connect() as conn:
         filas = [dict(r) for r in conn.execute(text(sql), params).mappings()]
 
@@ -719,7 +726,7 @@ def platillos_en_tendencia(engine: Engine, sucursal: str | None = None, hasta: s
         "SELECT platillo, "
         "SUM(CASE WHEN fecha >= :ini_actual THEN importe ELSE 0 END) AS ventas_actual, "
         "SUM(CASE WHEN fecha < :ini_actual THEN importe ELSE 0 END) AS ventas_pasada "
-        "FROM sales_lines WHERE fecha >= :ini_pasado AND fecha <= :fin_actual"
+        "FROM sales_lines WHERE fecha >= :ini_pasado AND fecha <= :fin_actual" + EXCLUIR_BOLSA_SQL
     )
     params: dict = {
         "ini_actual": ini_actual.isoformat(), "ini_pasado": ini_pasado.isoformat(),
@@ -777,12 +784,18 @@ def platillos_acompanantes(engine: Engine, sucursal: str, platillo: str, desde: 
     mezclar las dos sin distinguir juntaría, por accidente, chequeos de
     negocios distintos que comparten número.
 
+    "Bolsa*" nunca aparece como acompañante (casi cualquier compra lleva
+    una -- eso no es una sugerencia útil de venta cruzada, es ruido) ni
+    como ancla (si `platillo` mismo es "Bolsa*", no hay nada que analizar
+    -- devuelve None).
+
     Self-join agregado en SQL (no fila por fila en Python) -- mismo motivo
     que el resto de funciones sobre esta tabla: cientos de miles de filas
     es demasiado para traer completas solo para contar coincidencias."""
     sql_total = (
         "SELECT COUNT(DISTINCT movimiento_pdv) AS n FROM sales_lines "
         "WHERE sucursal = :sucursal AND platillo = :platillo AND movimiento_pdv IS NOT NULL"
+        + EXCLUIR_BOLSA_SQL
     )
     params_total: dict = {"sucursal": sucursal, "platillo": platillo}
     if desde:
@@ -797,7 +810,8 @@ def platillos_acompanantes(engine: Engine, sucursal: str, platillo: str, desde: 
         "FROM sales_lines a JOIN sales_lines b "
         "ON a.sucursal = b.sucursal AND a.movimiento_pdv = b.movimiento_pdv "
         "WHERE a.sucursal = :sucursal AND a.platillo = :platillo "
-        "AND a.movimiento_pdv IS NOT NULL AND b.platillo != :platillo"
+        "AND a.movimiento_pdv IS NOT NULL AND b.platillo != :platillo "
+        "AND b.platillo NOT LIKE 'BOLSA%'"
     )
     params_juntos: dict = {"sucursal": sucursal, "platillo": platillo}
     if desde:
@@ -1356,7 +1370,7 @@ def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
     # para sumar en Python tardaba ~30s por el tráfico de red hacia la base
     # en la nube, contra <1s agregando del lado del servidor.
     sql = ("SELECT fecha, SUM(cantidad) AS total FROM sales_lines "
-           "WHERE tipo_grupo = 'PANADERIA'" + PANADERIA_EXCLUIR_SQL)
+           "WHERE tipo_grupo = 'PANADERIA'" + EXCLUIR_BOLSA_SQL)
     params: dict = {}
     if sucursal:
         sql += " AND sucursal = :sucursal"
@@ -1410,7 +1424,7 @@ def top_platillos_panaderia(engine: Engine, sucursal: str | None = None,
     # líneas de Panadería, traerlas todas es ~30s de tráfico contra la
     # nube por nada (aquí solo hacen falta los totales por posición).
     sql = ("SELECT platillo, SUM(importe) AS ventas, SUM(cantidad) AS unidades "
-           "FROM sales_lines WHERE tipo_grupo = 'PANADERIA'" + PANADERIA_EXCLUIR_SQL)
+           "FROM sales_lines WHERE tipo_grupo = 'PANADERIA'" + EXCLUIR_BOLSA_SQL)
     params: dict = {}
     if sucursal:
         sql += " AND sucursal = :sucursal"
@@ -1458,7 +1472,7 @@ def patron_horario_panaderia(engine: Engine, sucursal: str | None = None,
            "SUM(importe) AS ventas, SUM(cantidad) AS unidades "
            "FROM sales_lines "
            "WHERE tipo_grupo = 'PANADERIA' AND hora_cierre IS NOT NULL "
-           "AND hora_cierre != ''" + PANADERIA_EXCLUIR_SQL)
+           "AND hora_cierre != ''" + EXCLUIR_BOLSA_SQL)
     params: dict = {}
     if sucursal:
         sql += " AND sucursal = :sucursal"
