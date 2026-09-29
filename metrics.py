@@ -298,6 +298,95 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
     return salida
 
 
+# Franjas del día -- cubren el horario de operación (6-22, mismo rango
+# que el resto del dashboard -- ver plan_tarea_dia). Cuatro bloques
+# estándar de restaurante/cafetería (desayuno/comida/merienda/cena), no
+# inventados para este negocio en particular -- igual que los umbrales de
+# ABC. Lista de tuplas (no dict) porque el ORDEN importa para el gráfico.
+# Pública (sin "_") -- dashboard.py la usa para saber el orden y los
+# nombres de las franjas al armar el gráfico.
+FRANJAS_DIA = [
+    ("Утро (6-9)", 6, 9),
+    ("Обед (10-14)", 10, 14),
+    ("Полдник (15-17)", 15, 17),
+    ("Вечер (18-22)", 18, 22),
+]
+
+
+def _franja_de_hora(hora: int) -> str | None:
+    for nombre, ini, fin in FRANJAS_DIA:
+        if ini <= hora <= fin:
+            return nombre
+    return None
+
+
+def ventas_por_franja_dia(engine: Engine, granularidad: str, sucursal: str | None = None,
+                           desde: str | None = None, hasta: str | None = None) -> list[dict]:
+    """¿Cómo cambia la MEZCLA del día (mañana/mediodía/tarde/noche) con el
+    tiempo? -- pregunta que ni patron_horario_bebidas (un patrón promedio
+    fijo de TODO el rango) ni patron_semana_por_hora (matriz día×hora, sin
+    eje de tiempo) contestan: aquí el eje X es el tiempo -- por ejemplo,
+    si la tarde va ganando peso mientras la mañana lo pierde, algo que un
+    patrón promedio único no puede mostrar porque ya viene todo mezclado.
+
+    Misma granularidad que serie_por_periodo (día/década/quincena/mes) --
+    reutiliza las mismas funciones de período, para que el resto del
+    dashboard entienda "década" o "mes" siempre de la misma forma.
+
+    Agregado en el SQL por (fecha, hora) primero -- mismo motivo que
+    patron_semana_por_hora: portable entre Postgres/SQLite y ya reduce el
+    volumen antes de clasificar franja y período en Python."""
+    fn = GRANULARIDADES[granularidad]
+    sql = (
+        "SELECT fecha, SUBSTR(hora_cierre, 12, 2) AS hora_str, SUM(importe) AS ventas "
+        "FROM sales_lines WHERE hora_cierre IS NOT NULL AND hora_cierre != ''"
+    )
+    params: dict = {}
+    if sucursal:
+        sql += " AND sucursal = :sucursal"
+        params["sucursal"] = sucursal
+    if desde:
+        sql += " AND fecha >= :desde"
+        params["desde"] = desde
+    if hasta:
+        sql += " AND fecha <= :hasta"
+        params["hasta"] = hasta
+    sql += " GROUP BY fecha, SUBSTR(hora_cierre, 12, 2)"
+
+    por_periodo: dict[tuple, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    meta: dict[tuple, tuple] = {}
+    with engine.connect() as conn:
+        for row in conn.execute(text(sql), params).mappings():
+            try:
+                hora = int(row["hora_str"])
+            except (ValueError, TypeError):
+                continue
+            franja = _franja_de_hora(hora)
+            if franja is None:
+                continue
+            d = dt.date.fromisoformat(row["fecha"])
+            start, end, etiqueta = fn(d)
+            key = (start, etiqueta)
+            meta[key] = (start, end, etiqueta)
+            por_periodo[key][franja] += row["ventas"]
+
+    salida = []
+    for key in sorted(por_periodo, key=lambda k: k[0]):
+        start, end, etiqueta = meta[key]
+        datos = por_periodo[key]
+        total = sum(datos.values())
+        fila = {
+            "periodo_inicio": start, "periodo_fin": end, "etiqueta": etiqueta,
+            "ventas_totales": round(total, 2),
+        }
+        for nombre, _, _ in FRANJAS_DIA:
+            monto = datos.get(nombre, 0.0)
+            fila[nombre] = round(monto, 2)
+            fila[f"{nombre}_pct"] = round(100 * monto / total, 1) if total else 0.0
+        salida.append(fila)
+    return salida
+
+
 def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
                             desde: str | None = None, hasta: str | None = None) -> list[dict]:
     """La MISMA partición de cuatro categorías que serie_por_periodo, pero
@@ -592,7 +681,14 @@ def platillos_en_tendencia(engine: Engine, sucursal: str | None = None, hasta: s
     la ventana combinada -- una posición de clase C (cola larga, casi sin
     venta) puede mostrar un cambio de +300% con una sola venta de más, sin
     que signifique nada para el negocio; filtrar a A/B deja solo cambios
-    que sí pesan en la caja."""
+    que sí pesan en la caja.
+
+    También devuelve, aparte, "nuevas" -- posiciones con CERO venta en el
+    período pasado y venta ya relevante (clase A/B) en el actual: la
+    comparación porcentual de arriba no puede mostrarlas (dividir entre
+    cero), así que sin esto quedarían invisibles -- justo las que más
+    interesa ver (una posición de menú nueva, o reactivada, que ya está
+    vendiendo bien)."""
     hasta_date = dt.date.fromisoformat(hasta) if hasta else (tiempo.hoy() - dt.timedelta(days=1))
     fin_actual = hasta_date
     ini_actual = fin_actual - dt.timedelta(days=dias - 1)
@@ -618,6 +714,7 @@ def platillos_en_tendencia(engine: Engine, sucursal: str | None = None, hasta: s
     sql += " GROUP BY platillo"
 
     filas = []
+    nuevas = []
     with engine.connect() as conn:
         for row in conn.execute(text(sql), params).mappings():
             clave = row["platillo"] or "(без названия)"
@@ -625,9 +722,11 @@ def platillos_en_tendencia(engine: Engine, sucursal: str | None = None, hasta: s
                 continue
             ventas_actual = row["ventas_actual"] or 0.0
             ventas_pasada = row["ventas_pasada"] or 0.0
-            cambio_pct = _delta_pct(ventas_actual, ventas_pasada)
-            if cambio_pct is None:
+            if ventas_pasada == 0.0:
+                if ventas_actual > 0:
+                    nuevas.append({"platillo": clave, "ventas_actual": round(ventas_actual, 2)})
                 continue
+            cambio_pct = _delta_pct(ventas_actual, ventas_pasada)
             filas.append({
                 "platillo": clave,
                 "ventas_actual": round(ventas_actual, 2),
@@ -638,11 +737,12 @@ def platillos_en_tendencia(engine: Engine, sucursal: str | None = None, hasta: s
     filas.sort(key=lambda f: f["cambio_pct"], reverse=True)
     subiendo = [f for f in filas if f["cambio_pct"] > 0][:n]
     bajando = sorted((f for f in filas if f["cambio_pct"] < 0), key=lambda f: f["cambio_pct"])[:n]
+    nuevas.sort(key=lambda f: f["ventas_actual"], reverse=True)
 
     return {
         "desde_actual": ini_actual.isoformat(), "hasta_actual": fin_actual.isoformat(),
         "desde_pasado": ini_pasado.isoformat(), "hasta_pasado": fin_pasado.isoformat(),
-        "dias": dias, "subiendo": subiendo, "bajando": bajando,
+        "dias": dias, "subiendo": subiendo, "bajando": bajando, "nuevas": nuevas[:n],
     }
 
 
@@ -816,7 +916,7 @@ def resumen_dia(engine: Engine, fecha: str, sucursal: str | None = None) -> dict
     target = dt.date.fromisoformat(fecha)
     keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
 
-    sql = ("SELECT tipo_grupo, platillo, importe, movimiento_pdv "
+    sql = ("SELECT tipo_grupo, platillo, importe, cantidad, movimiento_pdv "
            "FROM sales_lines WHERE fecha = :fecha")
     params: dict = {"fecha": fecha}
     if sucursal:
@@ -824,12 +924,14 @@ def resumen_dia(engine: Engine, fecha: str, sucursal: str | None = None) -> dict
         params["sucursal"] = sucursal
 
     ventas_totales = 0.0
+    unidades_totales = 0.0
     ordenes: set = set()
     por_categoria: dict[str, float] = defaultdict(float)
 
     with engine.connect() as conn:
         for row in conn.execute(text(sql), params).mappings():
             ventas_totales += row["importe"]
+            unidades_totales += row["cantidad"] or 0
             if row["movimiento_pdv"] is not None:
                 ordenes.add(row["movimiento_pdv"])
 
@@ -866,6 +968,8 @@ def resumen_dia(engine: Engine, fecha: str, sucursal: str | None = None) -> dict
         "num_ordenes": num_ordenes,
         "ventas_totales": round(ventas_totales, 2),
         "cheque_promedio": round(ventas_totales / num_ordenes, 2) if num_ordenes else 0.0,
+        "unidades_totales": round(unidades_totales, 2),
+        "unidades_por_cheque": round(unidades_totales / num_ordenes, 2) if num_ordenes else 0.0,
         "categorias": categorias,
     }
 
@@ -999,7 +1103,8 @@ def serie_dia_resumen(engine: Engine, desde: str, hasta: str,
     keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
 
     sql_totales = ("SELECT fecha, COUNT(DISTINCT movimiento_pdv) AS num_ordenes, "
-                   "SUM(importe) AS ventas_totales FROM sales_lines "
+                   "SUM(importe) AS ventas_totales, SUM(cantidad) AS unidades_totales "
+                   "FROM sales_lines "
                    "WHERE fecha >= :desde AND fecha <= :hasta")
     params: dict = {"desde": desde, "hasta": hasta}
     if sucursal:
@@ -1018,6 +1123,7 @@ def serie_dia_resumen(engine: Engine, desde: str, hasta: str,
         for row in conn.execute(text(sql_totales), params).mappings():
             totales[row["fecha"]] = {
                 "num_ordenes": row["num_ordenes"], "ventas_totales": row["ventas_totales"],
+                "unidades_totales": row["unidades_totales"] or 0.0,
             }
 
     por_categoria: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -1038,6 +1144,7 @@ def serie_dia_resumen(engine: Engine, desde: str, hasta: str,
     for fecha, t in sorted(totales.items()):
         ventas_totales = t["ventas_totales"]
         num_ordenes = t["num_ordenes"]
+        unidades_totales = t["unidades_totales"]
         cats_dia = por_categoria.get(fecha, {})
 
         def _pct(cat: str) -> float:
@@ -1048,6 +1155,8 @@ def serie_dia_resumen(engine: Engine, desde: str, hasta: str,
             "num_ordenes": num_ordenes,
             "ventas_totales": round(ventas_totales, 2),
             "cheque_promedio": round(ventas_totales / num_ordenes, 2) if num_ordenes else 0.0,
+            "unidades_totales": round(unidades_totales, 2),
+            "unidades_por_cheque": round(unidades_totales / num_ordenes, 2) if num_ordenes else 0.0,
             "panaderia_pct": _pct("Panadería"),
             "pasteleria_pct": _pct("Pastelería"),
             "cafe_pct": _pct("Café"),
@@ -1127,6 +1236,10 @@ def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = No
     Añade, sobre el mismo resumen:
       - tipico_ventas_totales / ventas_vs_tipico_pct
       - tipico_cheque_promedio / cheque_vs_tipico_pct
+      - tipico_unidades_por_cheque / unidades_por_cheque_vs_tipico_pct -- el
+        MISMO chequeo promedio, pero en piezas en vez de pesos: un chequeo
+        puede crecer en dinero por vender más piezas, o solo por vender
+        piezas más caras -- esto separa las dos causas.
       - por cada categoría: tipico_pct / dif_pt (puntos porcentuales)
       - serie_reciente -- los últimos días del rango de historia, para
         dibujar mini-tendencias (sparklines) en el dashboard.
@@ -1146,10 +1259,14 @@ def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = No
     ticket_por_fecha = {
         dt.date.fromisoformat(d["fecha"]): d["cheque_promedio"] for d in serie if d["num_ordenes"]
     }
+    unidades_cheque_por_fecha = {
+        dt.date.fromisoformat(d["fecha"]): d["unidades_por_cheque"] for d in serie if d["num_ordenes"]
+    }
 
     tipico_ventas = _tipico_recencia(ventas_por_fecha, target)
     tipico_ordenes = _tipico_recencia(ordenes_por_fecha, target)
     tipico_ticket = _tipico_recencia(ticket_por_fecha, target)
+    tipico_unidades_cheque = _tipico_recencia(unidades_cheque_por_fecha, target)
 
     resumen["tipico_ventas_totales"] = round(tipico_ventas, 2) if tipico_ventas is not None else None
     resumen["ventas_vs_tipico_pct"] = (
@@ -1162,6 +1279,13 @@ def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = No
     resumen["tipico_cheque_promedio"] = round(tipico_ticket, 2) if tipico_ticket is not None else None
     resumen["cheque_vs_tipico_pct"] = (
         _delta_pct(resumen["cheque_promedio"], tipico_ticket) if tipico_ticket else None
+    )
+    resumen["tipico_unidades_por_cheque"] = (
+        round(tipico_unidades_cheque, 2) if tipico_unidades_cheque is not None else None
+    )
+    resumen["unidades_por_cheque_vs_tipico_pct"] = (
+        _delta_pct(resumen["unidades_por_cheque"], tipico_unidades_cheque)
+        if tipico_unidades_cheque else None
     )
 
     campo_pct = {

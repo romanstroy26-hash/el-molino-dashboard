@@ -332,6 +332,11 @@ def _cache_patron_semana_por_hora(_engine, sucursal, desde, hasta):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_ventas_por_franja_dia(_engine, granularidad, sucursal, desde, hasta):
+    return metrics.ventas_por_franja_dia(_engine, granularidad, sucursal=sucursal, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_ventas_por_categoria(_engine, sucursal, desde, hasta):
     return metrics.ventas_por_categoria(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
@@ -943,6 +948,15 @@ def page_home():
         )
         if resumen.get("tipico_cheque_promedio") is not None:
             fila1[2].caption(f"обычно ~{resumen['tipico_cheque_promedio']:,.0f} $")
+        if resumen.get("unidades_por_cheque"):
+            # Тот же средний чек, но в штуках, а не в деньгах -- растёт ли
+            # чек потому что берут БОЛЬШЕ позиций, или потому что позиции
+            # ДОРОЖЕ -- цифра слева этого не различает.
+            texto_unidades = f"{resumen['unidades_por_cheque']:.1f} шт/чек"
+            pct_unidades = resumen.get("unidades_por_cheque_vs_tipico_pct")
+            if pct_unidades is not None:
+                texto_unidades += f" ({pct_unidades:+.0f}% к обычному)"
+            fila1[2].caption(texto_unidades)
 
         serie_reciente = resumen.get("serie_reciente") or []
         if len(serie_reciente) >= 3:
@@ -1691,6 +1705,46 @@ def page_por_hora():
 
     _bloque_analisis_dia(df, fecha_elegida)
 
+    # ---- Как меняется структура дня со временем -----------------------------
+    # Панель выше -- один конкретный день по часам. Здесь -- наоборот: не
+    # один день, а КАК МЕНЯЕТСЯ микс дня (утро/обед/полдник/вечер) от
+    # декады к декаде за последние ~4 месяца.
+    st.subheader("Как меняется структура дня")
+    hasta_franjas = dt.date.fromisoformat(fechas[-1])
+    desde_franjas = max(dt.date.fromisoformat(fechas[0]), hasta_franjas - dt.timedelta(days=119))
+    franjas_datos = _cache_ventas_por_franja_dia(
+        engine, "decada", sucursal_filtro, desde_franjas.isoformat(), hasta_franjas.isoformat(),
+    )
+    if len(franjas_datos) < 2:
+        st.info("Пока недостаточно периодов, чтобы показать динамику.")
+    else:
+        nombres_franjas = [nombre for nombre, _, _ in metrics.FRANJAS_DIA]
+        largo = pd.DataFrame(franjas_datos).melt(
+            id_vars=["periodo_inicio", "etiqueta"],
+            value_vars=[f"{n}_pct" for n in nombres_franjas],
+            var_name="_col", value_name="pct",
+        )
+        largo["Отрезок"] = largo["_col"].str.replace("_pct", "", regex=False)
+        grafico_franjas = alt.Chart(largo).mark_area().encode(
+            x=alt.X("periodo_inicio:T", title="Период"),
+            y=alt.Y("pct:Q", title="Доля выручки, %"),
+            color=alt.Color("Отрезок:N", title=None, sort=nombres_franjas,
+                             legend=alt.Legend(orient="bottom")),
+            tooltip=[
+                alt.Tooltip("etiqueta:N", title="Период"),
+                alt.Tooltip("Отрезок:N", title="Отрезок"),
+                alt.Tooltip("pct:Q", title="Доля, %", format=".1f"),
+            ],
+        ).properties(height=280)
+        st.altair_chart(grafico_franjas, width="stretch")
+        st.caption(
+            "Доля выручки по отрезкам дня, декада за декадой, последние "
+            "~4 месяца -- растёт ли, например, доля вечера за счёт утра, "
+            "или наоборот. Стандартные отрезки кафе/ресторана (завтрак / "
+            "обед / полдник / ужин), не подобраны специально под это "
+            "меню."
+        )
+
 
 # =============================================================================
 # Страница "Топ товаров" -- полная картина продаж, не только кофе
@@ -1841,6 +1895,20 @@ def page_top_productos():
             )
         else:
             st.caption("Нет позиций с заметным падением за этот период.")
+
+    if tendencia["nuevas"]:
+        st.write("🆕 **Новые (не продавались в прошлом периоде)**")
+        st.caption(
+            "«Растущие» выше не может их показать -- деление на ноль: "
+            "продаж не было совсем, сравнивать не с чем. Но раз они уже "
+            "попали в класс A/B, значит уже что-то значат в выручке."
+        )
+        st.dataframe(
+            pd.DataFrame(tendencia["nuevas"]).rename(columns={
+                "platillo": "Позиция", "ventas_actual": "Выручка сейчас, $",
+            }),
+            width="stretch", hide_index=True,
+        )
 
     # ---- С чем покупают вместе (анализ чека) --------------------------------
     st.subheader("С чем покупают вместе")
