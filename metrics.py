@@ -227,7 +227,14 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
     fn = GRANULARIDADES[granularidad]
     keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
 
-    sql = ("SELECT fecha, tipo_grupo, platillo, importe, cantidad "
+    # Agregado en el SQL por (fecha, tipo_grupo, platillo) -- no fila por
+    # fila en Python: sin esto, con el filtro de fechas abierto a toda la
+    # historia, esta consulta trae la tabla casi entera (medido: ~48s
+    # contra <5s agregado) -- mismo motivo y mismo remedio que
+    # cafe_por_sucursal, que ya se reescribió así tras un corte de
+    # conexión SSL en un rango grande.
+    sql = ("SELECT fecha, tipo_grupo, platillo, "
+           "SUM(importe) AS importe, SUM(cantidad) AS cantidad "
            "FROM sales_lines WHERE 1=1")
     params: dict = {}
     if sucursal:
@@ -239,6 +246,7 @@ def serie_por_periodo(engine: Engine, granularidad: str, sucursal: str | None = 
     if hasta:
         sql += " AND fecha <= :hasta"
         params["hasta"] = hasta
+    sql += " GROUP BY fecha, tipo_grupo, platillo"
 
     ventas = defaultdict(float)
     cafe = defaultdict(float)
@@ -417,10 +425,17 @@ def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
     tenemos (hora_cierre), sin depender de un dato externo manual.
 
     Requiere hora_cierre -- filas sin hora (exportaciones viejas antes de
-    que Wansoft empezara a guardar el número de chequeo) quedan fuera."""
+    que Wansoft empezara a guardar el número de chequeo) quedan fuera.
+
+    Agregado en el SQL por (hora, tipo_grupo, platillo) -- no fila por fila
+    en Python (mismo motivo y mismo remedio que cafe_por_sucursal: en un
+    rango grande esto traía la tabla casi entera). SUBSTR(hora_cierre, 12,
+    2) -- mismo truco portable Postgres/SQLite que patron_horario_panaderia
+    para sacar la hora sin fila por fila."""
     keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
 
-    sql = ("SELECT hora_cierre, tipo_grupo, platillo, importe, cantidad "
+    sql = ("SELECT SUBSTR(hora_cierre, 12, 2) AS hora_str, tipo_grupo, platillo, "
+           "SUM(importe) AS importe, SUM(cantidad) AS cantidad "
            "FROM sales_lines WHERE hora_cierre IS NOT NULL AND hora_cierre != ''")
     params: dict = {}
     if sucursal:
@@ -432,6 +447,7 @@ def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
     if hasta:
         sql += " AND fecha <= :hasta"
         params["hasta"] = hasta
+    sql += " GROUP BY SUBSTR(hora_cierre, 12, 2), tipo_grupo, platillo"
 
     cafe = defaultdict(float)
     frappe = defaultdict(float)
@@ -443,7 +459,7 @@ def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
     with engine.connect() as conn:
         for row in conn.execute(text(sql), params).mappings():
             try:
-                hora = dt.datetime.fromisoformat(row["hora_cierre"]).hour
+                hora = int(row["hora_str"])
             except (ValueError, TypeError):
                 continue
             if row["tipo_grupo"] == "FRAPPES":
@@ -478,10 +494,14 @@ def top_platillos_bebidas(engine: Engine, sucursal: str | None = None,
     no por fecha ni por hora. Responde la pregunta que ni la dinámica ni
     el patrón por hora contestan: "la categoría creció -- ¿por CUÁL
     producto exactamente?" -- por ejemplo si el crecimiento de Frappé es
-    parejo entre sabores o lo carga un solo producto nuevo."""
+    parejo entre sabores o lo carga un solo producto nuevo.
+
+    Agregado en el SQL por (tipo_grupo, platillo) -- no fila por fila en
+    Python (mismo motivo y mismo remedio que cafe_por_sucursal)."""
     keywords = [row["palabra"] for row in get_coffee_keywords(engine)]
 
-    sql = "SELECT tipo_grupo, platillo, importe, cantidad FROM sales_lines WHERE 1=1"
+    sql = ("SELECT tipo_grupo, platillo, SUM(importe) AS importe, SUM(cantidad) AS cantidad "
+           "FROM sales_lines WHERE 1=1")
     params: dict = {}
     if sucursal:
         sql += " AND sucursal = :sucursal"
@@ -492,6 +512,7 @@ def top_platillos_bebidas(engine: Engine, sucursal: str | None = None,
     if hasta:
         sql += " AND fecha <= :hasta"
         params["hasta"] = hasta
+    sql += " GROUP BY tipo_grupo, platillo"
 
     cafe: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
     frappe: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
