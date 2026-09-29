@@ -161,6 +161,31 @@ def _db_label() -> str:
     return f"облако: {url.drivername}, база «{url.database}» на {url.host}"
 
 
+def _selector_rango_fechas(key_prefix: str, fecha_min: dt.date, desde_default: dt.date,
+                           hasta_default: dt.date, fecha_max: dt.date | None = None) -> tuple[dt.date, dt.date]:
+    """Два отдельных поля даты ("С" / "По") вместо одного date_input с
+    диапазоном -- у диапазона Streamlit нужно ДВА клика (первый клик
+    схлопывает выбор до одного дня), а клик мимо второй даты сбрасывает
+    всё заново, приходится начинать сначала. Два независимых календаря
+    этой проблемы не имеют -- один клик на каждый, готово.
+
+    fecha_max=None -- без верхней границы (нужно для "Планирование",
+    где можно выбрать дату В БУДУЩЕМ, за пределами последних продаж)."""
+    col_desde, col_hasta = st.sidebar.columns(2)
+    desde = col_desde.date_input(
+        "С", value=desde_default, min_value=fecha_min, max_value=fecha_max,
+        key=f"{key_prefix}_desde",
+    )
+    hasta = col_hasta.date_input(
+        "По", value=hasta_default, min_value=fecha_min, max_value=fecha_max,
+        key=f"{key_prefix}_hasta",
+    )
+    if desde > hasta:
+        st.sidebar.error("«С» позже «По» -- поменяй местами.")
+        st.stop()
+    return desde, hasta
+
+
 # =============================================================================
 # Кэш -- чтобы при смене фильтров не ходить в базу заново каждый раз
 # =============================================================================
@@ -824,12 +849,12 @@ def _sparkline(df: pd.DataFrame, campo: str, color: str) -> alt.Chart:
     ).properties(height=40)
 
 
-def _ir_a_horas_callback(sucursal_valor: str, fecha_valor: str) -> None:
+def _ir_a_horas_callback(fecha_valor: str) -> None:
     """on_click кнопки "Разобрать этот день по часам" на Главной --
-    выставляет фильтры страницы "Продажи по часам" и переключает раздел.
+    выставляет день на странице "Продажи по часам" и переключает раздел
+    (точка -- общий фильтр на весь дашборд, её переставлять не нужно).
     ДОЛЖНО быть колбэком (on_click), не прямой записью в session_state
     после отрисовки кнопки -- см. комментарий у самой кнопки."""
-    st.session_state["hora_sucursal"] = sucursal_valor
     st.session_state["hora_fecha"] = fecha_valor
     st.session_state["_pagina_actual"] = "Продажи по часам"
 
@@ -838,7 +863,6 @@ def _ir_a_horas_callback(sucursal_valor: str, fecha_valor: str) -> None:
 # Страница "Главная" -- как прошёл последний день, без единого клика
 # =============================================================================
 def page_home():
-    sucursales = _cache_sucursales(engine)
     if not sucursales:
         st.title("🏠 Todos El Molino")
         st.warning(
@@ -848,10 +872,6 @@ def page_home():
         st.stop()
 
     st.sidebar.header("Фильтры")
-    opcion_sucursal = st.sidebar.selectbox(
-        "Точка", ["Все точки"] + sucursales, index=0, key="home_sucursal"
-    )
-    sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
     nombre_punto = sucursal_filtro if sucursal_filtro else "Todos El Molino"
 
     fechas = _cache_fechas_con_hora(engine, sucursal_filtro)
@@ -1108,7 +1128,7 @@ def page_home():
     # способ Streamlit для программной навигации.
     st.button(
         "🔍 Разобрать этот день по часам подробнее", key="btn_ir_a_horas",
-        on_click=_ir_a_horas_callback, args=(opcion_sucursal, fecha_elegida),
+        on_click=_ir_a_horas_callback, args=(fecha_elegida,),
     )
 
     st.caption(
@@ -1238,7 +1258,6 @@ def page_dashboard():
     st.title("🥤 Cafeteria: кофе, фраппе и остальное")
     st.caption(f"База данных: {_db_label()}")
 
-    sucursales = _cache_sucursales(engine)
     if not sucursales:
         st.warning(
             "В базе пока нет данных. Запусти menu.py (или Start.bat) и "
@@ -1248,9 +1267,6 @@ def page_dashboard():
 
     # ---- Боковая панель: фильтры -------------------------------------------
     st.sidebar.header("Фильтры")
-
-    opcion_sucursal = st.sidebar.selectbox("Точка", ["Все точки"] + sucursales, index=0)
-    sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
 
     medida_label = st.sidebar.radio("Что показывать", list(_MEDIDAS.keys()), index=0)
     medida = _MEDIDAS[medida_label]
@@ -1275,9 +1291,8 @@ def page_dashboard():
     # По умолчанию -- последние 30 дней (не вся история): так при открытии
     # сразу видна свежая динамика, а не усреднённая картина за годы.
     fecha_default_desde = max(fecha_min, fecha_max - dt.timedelta(days=29))
-    desde, hasta = st.sidebar.date_input(
-        "Диапазон дат", value=(fecha_default_desde, fecha_max),
-        min_value=fecha_min, max_value=fecha_max,
+    desde, hasta = _selector_rango_fechas(
+        "cafeteria_rango", fecha_min, fecha_default_desde, fecha_max, fecha_max,
     )
     st.sidebar.caption(f"Данные есть с {fecha_min} по {fecha_max}")
 
@@ -1803,7 +1818,6 @@ def page_por_hora():
     st.title("🕐 Продажи по часам")
     st.caption(f"База данных: {_db_label()}")
 
-    sucursales = _cache_sucursales(engine)
     if not sucursales:
         st.warning(
             "В базе пока нет данных. Запусти Start.bat и сначала загрузи "
@@ -1812,10 +1826,6 @@ def page_por_hora():
         st.stop()
 
     st.sidebar.header("Фильтры")
-    opcion_sucursal = st.sidebar.selectbox(
-        "Точка", ["Все точки"] + sucursales, index=0, key="hora_sucursal"
-    )
-    sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
 
     fechas = _cache_fechas_con_hora(engine, sucursal_filtro)
     if not fechas:
@@ -1931,7 +1941,6 @@ def page_top_productos():
     st.title("🏆 Топ товаров")
     st.caption(f"База данных: {_db_label()}")
 
-    sucursales = _cache_sucursales(engine)
     if not sucursales:
         st.warning(
             "В базе пока нет данных. Запусти Start.bat и сначала загрузи "
@@ -1940,18 +1949,11 @@ def page_top_productos():
         st.stop()
 
     st.sidebar.header("Фильтры")
-    opcion_sucursal = st.sidebar.selectbox(
-        "Точка", ["Все точки"] + sucursales, index=0, key="top_sucursal"
-    )
-    sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
 
     rango = _cache_rango_fechas(engine, sucursal_filtro)
     fecha_min = dt.date.fromisoformat(rango[0])
     fecha_max = dt.date.fromisoformat(rango[1])
-    desde, hasta = st.sidebar.date_input(
-        "Диапазон дат", value=(fecha_min, fecha_max),
-        min_value=fecha_min, max_value=fecha_max, key="top_rango",
-    )
+    desde, hasta = _selector_rango_fechas("top_rango", fecha_min, fecha_min, fecha_max, fecha_max)
 
     # Общая подпись периода для секций, которые следуют фильтру "Диапазон
     # дат" слева -- их несколько (категории, топ-15, ABC), у каждой одна
@@ -2162,7 +2164,6 @@ def page_planificacion():
         "источника плана пока нет)."
     )
 
-    sucursales = _cache_sucursales(engine)
     if not sucursales:
         st.info(
             "Данных ещё нет -- сначала загрузи файлы Wansoft, потом обнови "
@@ -2171,10 +2172,6 @@ def page_planificacion():
         st.stop()
 
     st.sidebar.header("Фильтры")
-    opcion_sucursal = st.sidebar.selectbox(
-        "Точка", ["Все точки"] + sucursales, index=0, key="plan_sucursal"
-    )
-    sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
 
     # Диапазон дат этой ТОЧКИ, не всей базы -- у новых точек (например,
     # Concha & Cafe) история короче, и без min_value можно выбрать дни, для
@@ -2188,11 +2185,9 @@ def page_planificacion():
     # увидеть недавний тренд и спланировать ближайшую неделю, не перегружая
     # график лишней историей.
     hoy = tiempo.hoy()
-    desde, hasta = st.sidebar.date_input(
-        "Диапазон дат",
-        value=(max(fecha_min, hoy - dt.timedelta(days=20)), hoy + dt.timedelta(days=7)),
-        min_value=fecha_min,
-        key="plan_rango",
+    desde, hasta = _selector_rango_fechas(
+        "plan_rango", fecha_min,
+        max(fecha_min, hoy - dt.timedelta(days=20)), hoy + dt.timedelta(days=7),
     )
     st.sidebar.caption(f"Данные для этой точки есть с {fecha_min} по {fecha_max}")
 
@@ -2645,6 +2640,17 @@ page = st.sidebar.radio(
     # если в session_state уже что-то есть).
     key="_pagina_actual",
 )
+
+# Точка -- ОДНА на весь дашборд, сразу под разделом, а не отдельный
+# фильтр на каждой странице: раньше при переходе на другую страницу
+# выбор точки терялся (у каждой страницы был свой independent виджет со
+# своим ключом) -- теперь один выбор держится, пока не поменяешь сам.
+sucursales = _cache_sucursales(engine)
+opcion_sucursal = st.sidebar.selectbox(
+    "Точка", ["Все точки"] + sucursales, index=0, key="sucursal_global",
+)
+sucursal_filtro = None if opcion_sucursal == "Все точки" else opcion_sucursal
+
 st.sidebar.divider()
 
 # Данные обновляются сами каждые 5 минут (см. CACHE_TTL_SEGUNDOS выше), но
