@@ -747,6 +747,16 @@ def _sparkline(df: pd.DataFrame, campo: str, color: str) -> alt.Chart:
     ).properties(height=40)
 
 
+def _ir_a_horas_callback(sucursal_valor: str, fecha_valor: str) -> None:
+    """on_click кнопки "Разобрать этот день по часам" на Главной --
+    выставляет фильтры страницы "Продажи по часам" и переключает раздел.
+    ДОЛЖНО быть колбэком (on_click), не прямой записью в session_state
+    после отрисовки кнопки -- см. комментарий у самой кнопки."""
+    st.session_state["hora_sucursal"] = sucursal_valor
+    st.session_state["hora_fecha"] = fecha_valor
+    st.session_state["_pagina_actual"] = "Продажи по часам"
+
+
 # =============================================================================
 # Страница "Главная" -- как прошёл последний день, без единого клика
 # =============================================================================
@@ -832,10 +842,15 @@ def page_home():
         # тот же метод, что и остальные прогнозы в этом файле. Без этого
         # цифра дня читается сама по себе -- непонятно, много это или мало
         # ИМЕННО для {день недели}, а не в среднем по всем дням сразу.
+        # delta_color="off" (серый, без стрелки) при отклонении меньше
+        # metrics._UMBRAL_DESVIACION_PCT (5%) -- иначе даже разница в 1-2%
+        # красится в зелёный/красный, хотя это обычный шум дня, а не
+        # тенденция; тот же порог, что уже используется в "Анализ дня".
         fila1[0].metric(
             "Продажи", f"{resumen['num_ordenes']:,}",
             delta=(f"{resumen['ordenes_vs_tipico_pct']:+.1f}% к типичному {resumen['dia_semana']}"
                    if resumen.get("ordenes_vs_tipico_pct") is not None else None),
+            delta_color=metrics.delta_color_significativo(resumen.get("ordenes_vs_tipico_pct")),
         )
         if resumen.get("tipico_num_ordenes") is not None:
             fila1[0].caption(f"обычно ~{resumen['tipico_num_ordenes']:,.0f}")
@@ -844,6 +859,7 @@ def page_home():
             "Выручка", f"{resumen['ventas_totales']:,.0f} $",
             delta=(f"{resumen['ventas_vs_tipico_pct']:+.1f}% к типичному {resumen['dia_semana']}"
                    if resumen.get("ventas_vs_tipico_pct") is not None else None),
+            delta_color=metrics.delta_color_significativo(resumen.get("ventas_vs_tipico_pct")),
         )
         if resumen.get("tipico_ventas_totales") is not None:
             fila1[1].caption(f"обычно ~{resumen['tipico_ventas_totales']:,.0f} $")
@@ -852,6 +868,7 @@ def page_home():
             "Ср. чек", f"{resumen['cheque_promedio']:,.0f} $",
             delta=(f"{resumen['cheque_vs_tipico_pct']:+.1f}% к типичному {resumen['dia_semana']}"
                    if resumen.get("cheque_vs_tipico_pct") is not None else None),
+            delta_color=metrics.delta_color_significativo(resumen.get("cheque_vs_tipico_pct")),
         )
         if resumen.get("tipico_cheque_promedio") is not None:
             fila1[2].caption(f"обычно ~{resumen['tipico_cheque_promedio']:,.0f} $")
@@ -901,6 +918,23 @@ def page_home():
                         width="stretch", key=f"spark_{cat['categoria']}",
                     )
 
+        # Какая категория сдвинулась заметнее остальных против типичного
+        # дня -- один короткий вывод вместо того, чтобы сверять четыре
+        # "(+N.N пт)" в подписях глазами. Ничего не выводит, если ни одна
+        # категория не сдвинулась достаточно (см. metrics._UMBRAL_DIF_CATEGORIA_PT).
+        mezcla = metrics.analizar_mezcla_categorias(resumen)
+        if mezcla:
+            direccion_cat = "выше" if mezcla["dif_pt"] > 0 else "ниже"
+            texto_mezcla = (
+                f"📊 Доля «{mezcla['categoria']}» сегодня заметно {direccion_cat} "
+                f"обычного: {mezcla['pct']:.1f}% против типичных "
+                f"{mezcla['tipico_pct']:.1f}% ({mezcla['dif_pt']:+.1f} п.т.)."
+            )
+            festivo_txt_cat = _texto_festivo(mezcla.get("festivo"))
+            if festivo_txt_cat:
+                texto_mezcla += " " + festivo_txt_cat
+            st.caption(texto_mezcla)
+
     with cmp1_col:
         _panel_dia_vs_semana_pasada(comparacion["dia_vs_semana_pasada"])
 
@@ -919,10 +953,46 @@ def page_home():
     df_hora = _grafico_por_hora(datos_hora, compacto=True, en_columnas=True)
     _bloque_analisis_dia(df_hora, fecha_elegida)
 
+    # Кнопка вместо просто текста "иди туда руками" -- сама выставляет
+    # точку и день на странице "Продажи по часам" (там подробнее: таблица
+    # по часам, штуки отдельно) и переключает раздел. Запись в
+    # session_state -- ТОЛЬКО через on_click-колбэк: виджет с key
+    # "_pagina_actual" (боковой radio) уже создан в ЭТОМ прогоне к
+    # моменту, когда рисуется эта кнопка -- прямая запись в
+    # st.session_state здесь же упала бы с
+    # StreamlitWidgetAlreadyInstantiatedError. on_click выполняется ДО
+    # начала следующего прогона, когда виджеты ещё не созданы -- обычный
+    # способ Streamlit для программной навигации.
+    st.button(
+        "🔍 Разобрать этот день по часам подробнее", key="btn_ir_a_horas",
+        on_click=_ir_a_horas_callback, args=(opcion_sucursal, fecha_elegida),
+    )
+
     st.caption(
         "Точка и день -- в фильтрах слева. Более подробный разбор -- на "
         "страницах «Продажи по часам» и «Топ товаров»."
     )
+
+    # ---- Сравнение точек сегодня -------------------------------------------
+    # Всегда ВСЕ точки сразу, вне зависимости от фильтра "Точка" выше --
+    # тот же принцип, что и "Кофе по точкам" на странице "Доля напитков":
+    # остальная страница акотает до одной точки (или суммирует все), а
+    # здесь наоборот нужно видеть их рядом.
+    if len(sucursales) > 1:
+        st.subheader("Точки сегодня")
+        por_sucursal = metrics.resumen_dia_por_sucursal(engine, fecha_elegida)
+        if por_sucursal:
+            st.dataframe(
+                pd.DataFrame(por_sucursal).rename(columns={
+                    "sucursal": "Точка", "num_ordenes": "Продажи",
+                    "ventas_totales": "Выручка, $", "cheque_promedio": "Ср. чек, $",
+                }),
+                width="stretch", hide_index=True,
+                column_config={
+                    "Выручка, $": st.column_config.NumberColumn(format="%.0f $"),
+                    "Ср. чек, $": st.column_config.NumberColumn(format="%.0f $"),
+                },
+            )
 
 
 # =============================================================================
@@ -1963,6 +2033,13 @@ page = st.sidebar.radio(
     ["Главная", "Доля напитков", "Продажи по часам", "Топ товаров",
      "Планирование", "Настройки"],
     index=0,
+    # key, а не просто index -- чтобы кнопка "Разобрать этот день по
+    # часам" на Главной (см. page_home) могла переключить раздел
+    # программно: она пишет в session_state["_pagina_actual"] ПЕРЕД
+    # st.rerun(), и при следующем прогоне этот виджет читает значение
+    # оттуда (обычный способ Streamlit -- виджет с key игнорирует index,
+    # если в session_state уже что-то есть).
+    key="_pagina_actual",
 )
 st.sidebar.divider()
 

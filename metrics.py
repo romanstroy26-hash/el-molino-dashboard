@@ -610,6 +610,54 @@ def resumen_dia(engine: Engine, fecha: str, sucursal: str | None = None) -> dict
     }
 
 
+def resumen_dia_por_sucursal(engine: Engine, fecha: str) -> list[dict]:
+    """resumen_dia, pero para TODAS las sucursales a la vez, una fila por
+    punto -- para comparar "quién cómo le fue hoy" en la página "Главная"
+    sin cambiar el filtro de la página (que sigue controlando la tarjeta
+    principal). Solo lo esencial (ventas, cheques, ticket) -- el desglose
+    por categoría ya está arriba, para la sucursal elegida."""
+    sql = ("SELECT sucursal, COUNT(DISTINCT movimiento_pdv) AS num_ordenes, "
+           "SUM(importe) AS ventas_totales FROM sales_lines "
+           "WHERE fecha = :fecha GROUP BY sucursal")
+    with engine.connect() as conn:
+        filas = list(conn.execute(text(sql), {"fecha": fecha}).mappings())
+    salida = [
+        {
+            "sucursal": f["sucursal"],
+            "num_ordenes": f["num_ordenes"],
+            "ventas_totales": round(f["ventas_totales"], 2),
+            "cheque_promedio": round(f["ventas_totales"] / f["num_ordenes"], 2) if f["num_ordenes"] else 0.0,
+        }
+        for f in filas
+    ]
+    salida.sort(key=lambda r: r["ventas_totales"], reverse=True)
+    return salida
+
+
+# Una categoría que se movió menos de esto (en puntos porcentuales) contra
+# lo típico de ese día de semana no vale la pena destacarla -- es la
+# variación normal de un día a otro, no algo que merezca una frase aparte.
+_UMBRAL_DIF_CATEGORIA_PT = 5.0
+
+
+def analizar_mezcla_categorias(resumen: dict) -> dict | None:
+    """¿Alguna categoría (Panadería/Pastelería/Café/Остальное) se movió más
+    de lo normal hoy, comparado con lo típico de ese día de semana (ver
+    resumen_dia_con_tipico)? Devuelve la que más se movió si pasa
+    _UMBRAL_DIF_CATEGORIA_PT, o None si ninguna se movió lo suficiente
+    para que valga la pena mencionarla."""
+    candidatas = [c for c in resumen.get("categorias", []) if c.get("dif_pt") is not None]
+    if not candidatas:
+        return None
+    peor = max(candidatas, key=lambda c: abs(c["dif_pt"]))
+    if abs(peor["dif_pt"]) < _UMBRAL_DIF_CATEGORIA_PT:
+        return None
+    return {
+        "categoria": peor["categoria"], "pct": peor["pct"], "tipico_pct": peor["tipico_pct"],
+        "dif_pt": peor["dif_pt"], "festivo": resumen.get("festivo"),
+    }
+
+
 def fechas_con_hora(engine: Engine, sucursal: str | None = None) -> list[str]:
     """Fechas para las que sí tenemos 'hora_cierre' (o sea, cargadas o
     recargadas ya con la versión del programa que guarda la hora) --
@@ -1293,6 +1341,18 @@ def ventas_por_hora(engine: Engine, fecha: str, sucursal: str | None = None) -> 
 # considera "en línea" con el pronóstico -- no vale la pena diagnosticar
 # ruido normal como si fuera un problema real.
 _UMBRAL_DESVIACION_PCT = 5.0
+
+
+def delta_color_significativo(pct: float | None) -> str:
+    """Para el parámetro delta_color de st.metric: 'off' (gris, sin
+    flecha verde/roja) si la desviación es chica (dentro de
+    _UMBRAL_DESVIACION_PCT) -- una diferencia de +2% contra lo típico es
+    ruido normal día a día, no una tendencia, y pintarla de color exagera
+    su importancia. 'normal' (colores de siempre) si la desviación ya es
+    grande."""
+    if pct is None:
+        return "off"
+    return "normal" if abs(pct) >= _UMBRAL_DESVIACION_PCT else "off"
 
 # Si menos de esta fracción de las horas activas terminó por debajo del
 # pronóstico, el problema se etiqueta "concentrado" (una franja horaria
