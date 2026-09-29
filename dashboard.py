@@ -227,7 +227,7 @@ def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
     return metrics.patron_horario_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner="Считаю прогноз по Panadería (вся история)...")
 def _cache_panaderia_real_y_pronostico(_engine, desde, hasta, sucursal):
     return metrics.panaderia_real_y_pronostico(_engine, desde=desde, hasta=hasta, sucursal=sucursal)
 
@@ -311,29 +311,34 @@ def _cache_top_platillos(_engine, sucursal, desde, hasta, n):
     return metrics.top_platillos(_engine, sucursal=sucursal, desde=desde, hasta=hasta, n=n)
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner="Считаю ABC-анализ...")
 def _cache_analisis_abc(_engine, sucursal, desde, hasta):
     return metrics.analisis_abc(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner="Ищу растущие и падающие позиции...")
 def _cache_platillos_en_tendencia(_engine, sucursal):
     return metrics.platillos_en_tendencia(_engine, sucursal=sucursal)
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner="Ищу, с чем покупают вместе...")
 def _cache_platillos_acompanantes(_engine, sucursal, platillo, desde, hasta):
     return metrics.platillos_acompanantes(_engine, sucursal, platillo, desde=desde, hasta=hasta)
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner="Строю карту загруженности...")
 def _cache_patron_semana_por_hora(_engine, sucursal, desde, hasta):
     return metrics.patron_semana_por_hora(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
 
 
-@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner="Считаю структуру дня по периодам...")
 def _cache_ventas_por_franja_dia(_engine, granularidad, sucursal, desde, hasta):
     return metrics.ventas_por_franja_dia(_engine, granularidad, sucursal=sucursal, desde=desde, hasta=hasta)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_ultima_carga(_engine):
+    return metrics.ultima_carga(_engine)
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -1775,8 +1780,14 @@ def page_top_productos():
         min_value=fecha_min, max_value=fecha_max, key="top_rango",
     )
 
+    # Общая подпись периода для секций, которые следуют фильтру "Диапазон
+    # дат" слева -- их несколько (категории, топ-15, ABC), у каждой одна
+    # и та же строка, чтобы не гадать, какая секция что использует.
+    _periodo_filtro_txt = f"Период: {desde.isoformat()} — {hasta.isoformat()} (как выбрано слева)."
+
     # ---- Категории меню -------------------------------------------------
     st.subheader("Выручка по категориям меню")
+    st.caption(_periodo_filtro_txt)
     categorias = _cache_ventas_por_categoria(
         engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
     )
@@ -1789,6 +1800,7 @@ def page_top_productos():
 
     # ---- Топ позиций ------------------------------------------------------
     st.subheader("Топ-15 позиций по выручке")
+    st.caption(_periodo_filtro_txt)
     top = _cache_top_platillos(
         engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(), 15,
     )
@@ -1824,6 +1836,7 @@ def page_top_productos():
     # другой вопрос: "сколько позиций вообще делают выручку, а сколько --
     # длинный хвост, без которого почти ничего не изменится".
     st.subheader("ABC-анализ позиций (Парето)")
+    st.caption(_periodo_filtro_txt)
     abc = _cache_analisis_abc(engine, sucursal_filtro, desde.isoformat(), hasta.isoformat())
     if abc["n_posiciones_total"]:
         clase_a = abc["clases"]["A"]
@@ -1863,12 +1876,14 @@ def page_top_productos():
     st.subheader("Растущие и падающие позиции")
     tendencia = _cache_platillos_en_tendencia(engine, sucursal_filtro)
     st.caption(
+        f"⏱️ Своё окно, не связано с «Диапазон дат» слева: "
         f"{tendencia['desde_actual']} — {tendencia['hasta_actual']} против "
         f"{tendencia['desde_pasado']} — {tendencia['hasta_pasado']} "
-        f"({tendencia['dias']} дней против {tendencia['dias']} дней), только "
-        f"позиции классов A и B (см. ABC-анализ выше) -- чтобы редкая "
-        f"позиция с парой лишних продаж не попала в список как "
-        f"«взлетевшая»."
+        f"({tendencia['dias']} дней против {tendencia['dias']} дней) -- "
+        f"иначе эта секция никогда не показала бы «сейчас», если бы диапазон "
+        f"слева был выбран на прошлый год. Только позиции классов A и B "
+        f"(см. ABC-анализ выше) -- чтобы редкая позиция с парой лишних "
+        f"продаж не попала в список как «взлетевшая»."
     )
     col_sube, col_baja = st.columns(2)
     with col_sube:
@@ -1922,6 +1937,7 @@ def page_top_productos():
         platillo_elegido = st.selectbox(
             "Позиция", [t["platillo"] for t in top], index=0, key="top_acomp_platillo",
         )
+        st.caption("⏱️ Своё окно (последние 90 дней), не связано с «Диапазон дат» слева.")
         # Свои последние 90 дней, а не весь диапазон дат слева -- запрос
         # это самосоединение таблицы чеков (см. platillos_acompanantes), и
         # на популярной позиции по ВСЕЙ истории это ощутимо медленнее без
@@ -2483,6 +2499,31 @@ st.sidebar.caption(
 # видно, что в Сан-Луис-Потоси ещё вечер вчерашнего дня, и никакого
 # противоречия в цифрах нет.
 st.sidebar.caption(f"🕐 Сан-Луис-Потоси: {tiempo.etiqueta()}")
+
+# Индикатор свежести данных -- не "жив ли сторож" (это нельзя проверить
+# из облачной версии дашборда, у неё нет доступа к файлам компьютера
+# Романа), а честно "когда в базу лёг последний чек" -- ровно то, что
+# важно знать: можно ли доверять сегодняшним цифрам. Если файлы просто
+# не приходили (тихий час, а не поломка) -- эта отметка тоже не сдвинется,
+# и это ожидаемо, не баг.
+_ultima_carga = _cache_ultima_carga(engine)
+if _ultima_carga:
+    try:
+        _minutos = int((tiempo.ahora().replace(tzinfo=None) - dt.datetime.fromisoformat(_ultima_carga))
+                        .total_seconds() // 60)
+    except ValueError:
+        _minutos = None
+    if _minutos is not None and _minutos >= 0:
+        if _minutos < 60:
+            _texto_carga = f"{_minutos} мин назад"
+        elif _minutos < 60 * 24:
+            _texto_carga = f"{_minutos // 60} ч назад"
+        else:
+            _texto_carga = f"{_minutos // (60 * 24)} дн назад"
+        _icono_carga = "⚠️ " if _minutos >= 24 * 60 else "🗂️ "
+        st.sidebar.caption(f"{_icono_carga}Данные обновлены: {_texto_carga}")
+else:
+    st.sidebar.caption("🗂️ Данные обновлены: неизвестно")
 
 if page == "Главная":
     page_home()

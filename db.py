@@ -87,10 +87,14 @@ sales_lines = Table(
 #  - (movimiento_pdv) -- поиск чека: по нему работает дедупликация при
 #    загрузке (см. insert_lines), иначе каждая загрузка снова читала бы
 #    таблицу целиком.
+#  - (cargado_en) -- для "когда данные обновлялись последний раз"
+#    (metrics.ultima_carga, индикатор в сайдбаре дашборда): без индекса
+#    MAX(cargado_en) читал бы всю таблицу целиком ради одного числа.
 INDICES = (
     Index("ix_sales_lines_fecha_sucursal", sales_lines.c.fecha, sales_lines.c.sucursal),
     Index("ix_sales_lines_sucursal_fecha", sales_lines.c.sucursal, sales_lines.c.fecha),
     Index("ix_sales_lines_movimiento", sales_lines.c.movimiento_pdv),
+    Index("ix_sales_lines_cargado_en", sales_lines.c.cargado_en),
 )
 
 # Список слов, по которым позиция считается "кофе" -- редактируется

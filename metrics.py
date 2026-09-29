@@ -157,6 +157,23 @@ DIAS_SEMANA_RU = [
 ]
 
 
+def ultima_carga(engine: Engine) -> str | None:
+    """Cuándo se cargó el dato MÁS RECIENTE en la base (columna cargado_en,
+    puesta por extractors/wansoft.py al momento de insertar cada fila) --
+    para el indicador "datos actualizados hace X" en el sidebar del
+    dashboard. Es una señal de DATOS, no de "el vigía sigue vivo": si no
+    llegan archivos nuevos de Wansoft, esta fecha no avanza aunque
+    vigilar.py esté corriendo perfectamente -- pero eso es justo lo que
+    a Roman le interesa saber (¿puedo confiar en que las cifras de hoy
+    están al día?), no si un proceso en particular sigue en memoria.
+
+    None si la tabla está vacía. Requiere el índice sobre cargado_en (ver
+    db.py, INDICES) -- sin él, MAX() leería la tabla entera por un solo
+    número."""
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT MAX(cargado_en) FROM sales_lines")).scalar_one_or_none()
+
+
 def sucursales_disponibles(engine: Engine) -> list[str]:
     with engine.connect() as conn:
         rows = conn.execute(text("SELECT DISTINCT sucursal FROM sales_lines ORDER BY sucursal"))
