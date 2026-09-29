@@ -1944,12 +1944,24 @@ def comparar_plan_fisico_por_producto(engine: Engine, sucursal: str, fechas: lis
     solo_en_plan.sort(key=lambda f: -f["plan"])
     solo_en_real.sort(key=lambda f: -f["real"])
 
+    # Cuánto del volumen REAL corresponde a posiciones que ni siquiera
+    # aparecen en el plan de papel (no "menos de lo planeado" -- CERO
+    # planeado) -- la prueba más directa de que la cocina no está
+    # restringida por ese papel: si lo estuviera, esas ventas no podrían
+    # existir (no hay de dónde sacar un producto que nunca se planeó).
+    suma_real_total = sum(f["real"] for f in emparejados) + sum(f["real"] for f in solo_en_real)
+    suma_solo_en_real = sum(f["real"] for f in solo_en_real)
+    pct_solo_en_real = round(100 * suma_solo_en_real / suma_real_total, 1) if suma_real_total else 0.0
+
     return {
         "n_emparejados": len(emparejados),
         "sobreproducidos": sobreproducidos,
         "subproducidos": subproducidos,
         "solo_en_plan": solo_en_plan[:n],
         "solo_en_real": solo_en_real[:n],
+        "suma_real_total": round(suma_real_total, 1),
+        "suma_solo_en_real": round(suma_solo_en_real, 1),
+        "pct_solo_en_real": pct_solo_en_real,
     }
 
 

@@ -2669,6 +2669,28 @@ def page_planificacion():
             f"даты (не связан с «Диапазон дат» слева -- других дат "
             f"просто нет, план физически не сфотографирован)."
         )
+
+        # Самое прямое доказательство того, что кухня НЕ ограничена бумагой:
+        # доля реального объёма, проданного под позициями, которых в плане
+        # нет ВООБЩЕ (не "меньше, чем планировали" -- НОЛЬ в плане). Если бы
+        # производство жёстко шло по листу, этих продаж просто не могло бы
+        # быть -- взять товар неоткуда.
+        datos_prod = _cache_comparar_plan_fisico_por_producto(engine, sucursal_filtro)
+        if datos_prod["suma_real_total"]:
+            st.metric(
+                "Продано вне плана (позиций нет в бумаге вообще)",
+                f"{datos_prod['pct_solo_en_real']:.0f}%",
+                help=(
+                    f"{datos_prod['suma_solo_en_real']:,.0f} шт из "
+                    f"{datos_prod['suma_real_total']:,.0f} шт реальных продаж "
+                    f"за период пришлось на позиции, которых нет ни в одной "
+                    f"фотографии бумажного плана -- это не \"перевыполнили "
+                    f"план\", это товар, который на бумаге не существует. "
+                    f"Прямое свидетельство, что производство не ограничено "
+                    f"этим листом, а решается на месте."
+                ),
+            )
+
         comparacion_dia = _cache_comparar_plan_fisico(engine, sucursal_filtro)
         df_plan_fisico = pd.DataFrame(comparacion_dia)
 
@@ -2741,8 +2763,8 @@ def page_planificacion():
         )
 
         # ---- По позициям меню -------------------------------------------------
+        # datos_prod уже посчитан выше (для метрики "Продано вне плана").
         st.subheader("По позициям: где план разошёлся с фактом больше всего")
-        datos_prod = _cache_comparar_plan_fisico_por_producto(engine, sucursal_filtro)
         col_sobre, col_sub = st.columns(2)
         with col_sobre:
             st.write("📉 **Планируют больше, чем продают**")
