@@ -1441,7 +1441,8 @@ def resumen_dia_con_tipico(engine: Engine, fecha: str, sucursal: str | None = No
 
 
 def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
-                                 sucursal: str | None = None) -> list[dict]:
+                                 sucursal: str | None = None,
+                                 categorias: tuple[str, ...] = ("PANADERIA",)) -> list[dict]:
     """Producción de Panadería (unidades) DÍA por día, para la página
     "Планирование" -- compara "cuánto se vendió" contra "cuánto se
     esperaba vender" y (aparte, en la tabla de plan_produccion) contra
@@ -1449,7 +1450,13 @@ def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
     ventas_por_hora (promedio del mismo día de semana, ponderado por
     recencia -- ver _peso_recencia --, con outliers suavizados -- ver
     _recortar_atipicos), pero agregando POR DÍA COMPLETO en vez de por
-    hora, y solo tipo_grupo='PANADERIA' en vez de todo el menú.
+    hora, y solo tipo_grupo en `categorias` (por defecto solo PANADERIA)
+    en vez de todo el menú.
+
+    `categorias` -- qué tipo_grupo incluir. Por defecto solo Panadería
+    (como el resto de "Планирование"); el gráfico "Физический план vs
+    факт" pasa ("PANADERIA", "PASTELERIA") para que el pronóstico cubra
+    LO MISMO que el plan físico en papel (que junta ambas categorías).
 
     desde/hasta puede incluir fechas FUTURAS (para planear producción de
     días que todavía no pasaron) -- ahí "real_unidades" sale None (no hay
@@ -1460,8 +1467,8 @@ def panaderia_real_y_pronostico(engine: Engine, desde: str, hasta: str,
     # para sumar en Python tardaba ~30s por el tráfico de red hacia la base
     # en la nube, contra <1s agregando del lado del servidor.
     sql = ("SELECT fecha, SUM(cantidad) AS total FROM sales_lines "
-           "WHERE tipo_grupo = 'PANADERIA'" + EXCLUIR_BOLSA_SQL)
-    params: dict = {}
+           "WHERE tipo_grupo = ANY(:categorias)" + EXCLUIR_BOLSA_SQL)
+    params: dict = {"categorias": list(categorias)}
     if sucursal:
         sql += " AND sucursal = :sucursal"
         params["sucursal"] = sucursal

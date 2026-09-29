@@ -263,6 +263,14 @@ def _cache_panaderia_real_y_pronostico(_engine, desde, hasta, sucursal):
     return metrics.panaderia_real_y_pronostico(_engine, desde=desde, hasta=hasta, sucursal=sucursal)
 
 
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner="Считаю прогноз по Panadería + Pastelería...")
+def _cache_pronostico_panaderia_pasteleria(_engine, desde, hasta, sucursal):
+    return metrics.panaderia_real_y_pronostico(
+        _engine, desde=desde, hasta=hasta, sucursal=sucursal,
+        categorias=("PANADERIA", "PASTELERIA"),
+    )
+
+
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_top_platillos_panaderia(_engine, sucursal, desde, hasta, n):
     return metrics.top_platillos_panaderia(_engine, sucursal=sucursal, desde=desde, hasta=hasta, n=n)
@@ -2664,22 +2672,37 @@ def page_planificacion():
         comparacion_dia = _cache_comparar_plan_fisico(engine, sucursal_filtro)
         df_plan_fisico = pd.DataFrame(comparacion_dia)
 
+        # Свой прогноз (взвешенное среднее по тому же дню недели, см.
+        # panaderia_real_y_pronostico) -- ТЕМИ ЖЕ категориями, что и
+        # физический план (Panadería + Pastelería вместе), иначе прогноз
+        # был бы не про то же самое, что сравниваем.
+        pronostico_dias = _cache_pronostico_panaderia_pasteleria(
+            engine, fechas_plan_fisico[0], fechas_plan_fisico[-1], sucursal_filtro,
+        )
+        pronostico_por_fecha = {d["fecha"]: d["pronostico_unidades"] for d in pronostico_dias}
+        df_plan_fisico["pronostico"] = df_plan_fisico["fecha"].map(pronostico_por_fecha)
+
         largo_pf = df_plan_fisico.melt(
-            id_vars=["fecha"], value_vars=["plan", "real"],
+            id_vars=["fecha"], value_vars=["plan", "real", "pronostico"],
             var_name="serie", value_name="valor",
         ).dropna(subset=["valor"])
-        largo_pf["serie"] = largo_pf["serie"].map({"plan": "План (бумага)", "real": "Факт"})
+        largo_pf["serie"] = largo_pf["serie"].map(
+            {"plan": "План (бумага)", "real": "Факт", "pronostico": "Прогноз"},
+        )
+        orden_series_pf = ["Факт", "Прогноз", "План (бумага)"]
         grafico_pf = alt.Chart(largo_pf).mark_line(point=True, strokeWidth=2.5).encode(
             x=alt.X("fecha:T", title=None),
             y=alt.Y("valor:Q", title="Штук (Panadería + Pastelería)"),
             color=alt.Color(
-                "serie:N", title=None,
-                scale=alt.Scale(domain=["Факт", "План (бумага)"],
-                                 range=[COLOR_PRIMARIO, COLOR_SECUNDARIO]),
+                "serie:N", title=None, sort=orden_series_pf,
+                scale=alt.Scale(domain=orden_series_pf,
+                                 range=[COLOR_PRIMARIO, COLOR_TIPICO, COLOR_SECUNDARIO]),
                 legend=alt.Legend(orient="bottom"),
             ),
-            strokeDash=alt.condition(
-                alt.datum.serie == "План (бумага)", alt.value([5, 4]), alt.value([1, 0]),
+            strokeDash=alt.StrokeDash(
+                "serie:N", sort=orden_series_pf,
+                scale=alt.Scale(domain=orden_series_pf, range=[[1, 0], [5, 4], [2, 2]]),
+                legend=None,
             ),
             tooltip=[
                 alt.Tooltip("fecha:T", title="Дата"),
@@ -2694,14 +2717,25 @@ def page_planificacion():
             suma_plan = sum(d["plan"] for d in con_ambos)
             suma_real = sum(d["real"] for d in con_ambos)
             delta_total = 100 * (suma_real - suma_plan) / suma_plan if suma_plan else 0.0
-            st.write(
+            texto_resumen = (
                 f"За {len(con_ambos)} дней: по бумажному плану должно "
                 f"было выйти {suma_plan:,.0f} шт, реально продано "
                 f"{suma_real:,.0f} шт ({delta_total:+.1f}%)."
             )
+            suma_pronostico = sum(
+                pronostico_por_fecha[d["fecha"]] for d in con_ambos
+                if pronostico_por_fecha.get(d["fecha"]) is not None
+            )
+            if suma_pronostico:
+                delta_pron = 100 * (suma_real - suma_pronostico) / suma_pronostico
+                texto_resumen += (
+                    f" Свой прогноз по истории ожидал {suma_pronostico:,.0f} шт "
+                    f"({delta_pron:+.1f}% от факта)."
+                )
+            st.write(texto_resumen)
         st.caption(
-            "«План» здесь -- не прогноз и не тот же ручной план, что в "
-            "таблице выше (тот -- только Panadería, задаётся отдельно в "
+            "«План» здесь -- не тот же ручной план, что в таблице выше "
+            "(тот -- только Panadería, задаётся отдельно в "
             "самом дашборде); это то, что реально было написано на "
             "бумаге на этот день."
         )
