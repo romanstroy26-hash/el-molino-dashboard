@@ -1360,9 +1360,15 @@ def page_dashboard():
     col_a_cat = {v: k for k, v in medida["columnas"].items()}
     largo["categoria"] = largo["_col"].map(col_a_cat)
 
+    # "По дням" -- каждая точка это ОТДЕЛЬНЫЙ день, а не период в несколько
+    # недель, как декада/квинсена/месяц -- там "мес. год" достаточно
+    # (соседние точки и так далеко друг от друга по времени), а здесь
+    # с тем же форматом на всех подписях было бы одно и то же "Sep 26" --
+    # число дня (28.09) единственное, что различает соседние точки.
+    _formato_eje_x = "%d.%m" if granularidad == "dia" else "%b %y"
     grafico = alt.Chart(largo).mark_line(point=True, strokeWidth=2.5).encode(
         x=alt.X("periodo_inicio:T", title=None,
-                axis=alt.Axis(labelExpr="timeFormat(datum.value, '%b %y')")),
+                axis=alt.Axis(labelExpr=f"timeFormat(datum.value, '{_formato_eje_x}')")),
         y=alt.Y("valor:Q", title=medida["titulo_eje"]),
         color=alt.Color(
             "categoria:N",
