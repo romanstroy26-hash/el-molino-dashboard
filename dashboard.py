@@ -1577,12 +1577,21 @@ def page_dashboard():
         _cache_clima_rango(desde.isoformat(), hasta_clima.isoformat())
         if desde <= hasta_clima else []
     )
-    banda_frappe = metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, "frappe_pct")
+    # Раскрытие по группам -- Кофе/Фраппе/Остальные напитки отдельно, не
+    # только Фраппе: жара может двигать спрос МЕЖДУ категориями (кофе вниз,
+    # что-то холодное вверх), а не только поднимать одну. "Напитки"
+    # (сумма всех трёх) сюда не идёт -- это была бы просто их сумма, тот
+    # же приём, что и в top_platillos_bebidas.
+    _CAT_BANDA = [("Кофе", "cafe_pct"), ("Фраппе", "frappe_pct"), ("Остальные напитки", "otras_bebidas_pct")]
+    filas_banda_cat = []
+    for cat, campo in _CAT_BANDA:
+        for fila in metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, campo) or []:
+            filas_banda_cat.append({**fila, "categoria": cat})
     banda_ventas = metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, "ventas_totales")
 
     if not clima_datos:
         st.info("Не удалось получить архив погоды для этого диапазона (Open-Meteo недоступен).")
-    elif banda_frappe is None and banda_ventas is None:
+    elif not filas_banda_cat and banda_ventas is None:
         st.info(
             "Недостаточно дней в каждой банде температуры для надёжного "
             "среднего (нужно минимум 3 дня на банду) -- попробуй диапазон "
@@ -1590,41 +1599,45 @@ def page_dashboard():
         )
     else:
         orden_bandas = [b[0] for b in metrics.BANDAS_TEMPERATURA]
-        col_frappe, col_ventas = st.columns(2)
-        with col_frappe:
-            st.caption("Доля Фраппе, % (среднее по банде)")
-            if banda_frappe:
-                grafico_bf = alt.Chart(pd.DataFrame(banda_frappe)).mark_bar(
-                    color=_COLOR_KATEGORII["Фраппе"],
-                ).encode(
-                    x=alt.X("banda:N", title=None, sort=orden_bandas),
-                    y=alt.Y("promedio:Q", title="Фраппе, %"),
-                    tooltip=[
-                        alt.Tooltip("banda:N", title="Температура"),
-                        alt.Tooltip("promedio:Q", title="Фраппе, %", format=".1f"),
-                        alt.Tooltip("n_dias:Q", title="Дней в банде"),
-                    ],
-                ).properties(height=240)
-                st.altair_chart(grafico_bf, width="stretch")
-            else:
-                st.caption("Недостаточно дней в каждой банде.")
-        with col_ventas:
-            st.caption("Выручка всего, $ (среднее по банде)")
-            if banda_ventas:
-                grafico_bv = alt.Chart(pd.DataFrame(banda_ventas)).mark_bar(
-                    color=COLOR_TIPICO,
-                ).encode(
-                    x=alt.X("banda:N", title=None, sort=orden_bandas),
-                    y=alt.Y("promedio:Q", title="Выручка, $"),
-                    tooltip=[
-                        alt.Tooltip("banda:N", title="Температура"),
-                        alt.Tooltip("promedio:Q", title="Выручка, $", format=",.0f"),
-                        alt.Tooltip("n_dias:Q", title="Дней в банде"),
-                    ],
-                ).properties(height=240)
-                st.altair_chart(grafico_bv, width="stretch")
-            else:
-                st.caption("Недостаточно дней в каждой банде.")
+        orden_cat = [c for c, _ in _CAT_BANDA]
+
+        st.caption("Доля от продаж по категориям, % (среднее по банде температуры)")
+        if filas_banda_cat:
+            grafico_bc = alt.Chart(pd.DataFrame(filas_banda_cat)).mark_bar().encode(
+                x=alt.X("banda:N", title=None, sort=orden_bandas),
+                xOffset=alt.XOffset("categoria:N", sort=orden_cat),
+                y=alt.Y("promedio:Q", title="Доля от продаж, %"),
+                color=alt.Color(
+                    "categoria:N", sort=orden_cat, title=None,
+                    scale=alt.Scale(domain=orden_cat, range=[_COLOR_KATEGORII[c] for c in orden_cat]),
+                    legend=alt.Legend(orient="bottom"),
+                ),
+                tooltip=[
+                    alt.Tooltip("banda:N", title="Температура"),
+                    alt.Tooltip("categoria:N", title="Категория"),
+                    alt.Tooltip("promedio:Q", title="Доля, %", format=".1f"),
+                    alt.Tooltip("n_dias:Q", title="Дней в банде"),
+                ],
+            ).properties(height=300)
+            st.altair_chart(grafico_bc, width="stretch")
+        else:
+            st.caption("Недостаточно дней в каждой банде.")
+
+        st.caption("Выручка всего, $ (среднее по банде)")
+        if banda_ventas:
+            grafico_bv = alt.Chart(pd.DataFrame(banda_ventas)).mark_bar(color=COLOR_TIPICO).encode(
+                x=alt.X("banda:N", title=None, sort=orden_bandas),
+                y=alt.Y("promedio:Q", title="Выручка, $"),
+                tooltip=[
+                    alt.Tooltip("banda:N", title="Температура"),
+                    alt.Tooltip("promedio:Q", title="Выручка, $", format=",.0f"),
+                    alt.Tooltip("n_dias:Q", title="Дней в банде"),
+                ],
+            ).properties(height=240)
+            st.altair_chart(grafico_bv, width="stretch")
+        else:
+            st.caption("Недостаточно дней в каждой банде.")
+
         st.caption(
             "Среднее по дням с известной максимальной температурой в "
             "Сан-Луис-Потоси (архив Open-Meteo, за весь выбранный "
