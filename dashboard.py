@@ -222,6 +222,11 @@ def _cache_clima_dia(fecha):
     return clima.clima_dia(fecha)
 
 
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def _cache_clima_rango(desde, hasta):
+    return clima.clima_rango(desde, hasta)
+
+
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_patron_horario_bebidas(_engine, sucursal, desde, hasta):
     return metrics.patron_horario_bebidas(_engine, sucursal=sucursal, desde=desde, hasta=hasta)
@@ -1549,6 +1554,84 @@ def page_dashboard():
             "Для этого диапазона нет строк с временем чека (hora_cierre) -- "
             "почасовой разбор недоступен. Перезагрузи те же файлы Wansoft "
             "через Start.bat -> пункт 1, это дозаполнит время без дублей."
+        )
+
+    # ---- Погода и напитки -------------------------------------------------------
+    # Не "какая погода была сегодня" (это уже есть в "Анализ дня" на других
+    # страницах, для ОДНОГО дня) -- а как ведут себя дни В ЦЕЛОМ при разной
+    # температуре: среднее по банде, а не отдельная точка. Своя дневная
+    # серия -- нужна ИМЕННО по дням, вне зависимости от выбранной сверху
+    # "Разбивки по периодам" (температура -- дневная величина).
+    st.subheader("Погода и напитки")
+    # serie_por_periodo llama a la fecha "periodo_inicio" (un date, no un
+    # string) en cualquier granularidad -- ventas_por_banda_temperatura
+    # espera "fecha" como string ISO, igual que clima_rango.
+    dias_temp = [
+        {**d, "fecha": d["periodo_inicio"].isoformat()}
+        for d in _cache_serie_por_periodo(
+            engine, "dia", sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+        )
+    ]
+    hasta_clima = min(hasta, tiempo.hoy() - dt.timedelta(days=1))
+    clima_datos = (
+        _cache_clima_rango(desde.isoformat(), hasta_clima.isoformat())
+        if desde <= hasta_clima else []
+    )
+    banda_frappe = metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, "frappe_pct")
+    banda_ventas = metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, "ventas_totales")
+
+    if not clima_datos:
+        st.info("Не удалось получить архив погоды для этого диапазона (Open-Meteo недоступен).")
+    elif banda_frappe is None and banda_ventas is None:
+        st.info(
+            "Недостаточно дней в каждой банде температуры для надёжного "
+            "среднего (нужно минимум 3 дня на банду) -- попробуй диапазон "
+            "подлиннее."
+        )
+    else:
+        orden_bandas = [b[0] for b in metrics.BANDAS_TEMPERATURA]
+        col_frappe, col_ventas = st.columns(2)
+        with col_frappe:
+            st.caption("Доля Фраппе, % (среднее по банде)")
+            if banda_frappe:
+                grafico_bf = alt.Chart(pd.DataFrame(banda_frappe)).mark_bar(
+                    color=_COLOR_KATEGORII["Фраппе"],
+                ).encode(
+                    x=alt.X("banda:N", title=None, sort=orden_bandas),
+                    y=alt.Y("promedio:Q", title="Фраппе, %"),
+                    tooltip=[
+                        alt.Tooltip("banda:N", title="Температура"),
+                        alt.Tooltip("promedio:Q", title="Фраппе, %", format=".1f"),
+                        alt.Tooltip("n_dias:Q", title="Дней в банде"),
+                    ],
+                ).properties(height=240)
+                st.altair_chart(grafico_bf, width="stretch")
+            else:
+                st.caption("Недостаточно дней в каждой банде.")
+        with col_ventas:
+            st.caption("Выручка всего, $ (среднее по банде)")
+            if banda_ventas:
+                grafico_bv = alt.Chart(pd.DataFrame(banda_ventas)).mark_bar(
+                    color=COLOR_TIPICO,
+                ).encode(
+                    x=alt.X("banda:N", title=None, sort=orden_bandas),
+                    y=alt.Y("promedio:Q", title="Выручка, $"),
+                    tooltip=[
+                        alt.Tooltip("banda:N", title="Температура"),
+                        alt.Tooltip("promedio:Q", title="Выручка, $", format=",.0f"),
+                        alt.Tooltip("n_dias:Q", title="Дней в банде"),
+                    ],
+                ).properties(height=240)
+                st.altair_chart(grafico_bv, width="stretch")
+            else:
+                st.caption("Недостаточно дней в каждой банде.")
+        st.caption(
+            "Среднее по дням с известной максимальной температурой в "
+            "Сан-Луис-Потоси (архив Open-Meteo, за весь выбранный "
+            "диапазон) -- банда показывается, только если в ней хотя бы "
+            "3 дня. Это НАБЛЮДАЕМОЕ совпадение, не доказанная причина -- "
+            "как и в «Анализ дня», погода здесь лишь один из возможных "
+            "факторов, наравне с праздниками, акциями и обычным шумом."
         )
 
     # ---- Что именно продаётся внутри каждой категории ------------------------

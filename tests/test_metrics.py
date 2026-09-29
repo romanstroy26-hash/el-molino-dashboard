@@ -263,3 +263,61 @@ def test_racha_desviacion_un_solo_dia_no_cuenta():
     valores[target] = 60.0  # solo el día target se desvía
 
     assert metrics._racha_desviacion(valores, target) is None
+
+
+# ---- _banda_de_temp / ventas_por_banda_temperatura ------------------------------------
+
+def test_banda_de_temp_cubre_todos_los_rangos():
+    assert metrics._banda_de_temp(15) == "< 20°C"
+    assert metrics._banda_de_temp(20) == "20-25°C"
+    assert metrics._banda_de_temp(24.9) == "20-25°C"
+    assert metrics._banda_de_temp(25) == "25-30°C"
+    assert metrics._banda_de_temp(30) == "> 30°C"
+    assert metrics._banda_de_temp(35) == "> 30°C"
+
+
+def test_banda_de_temp_none():
+    assert metrics._banda_de_temp(None) is None
+
+
+def test_ventas_por_banda_temperatura_promedia_por_banda():
+    dias = [
+        {"fecha": "2026-01-01", "frappe_pct": 2.0},
+        {"fecha": "2026-01-02", "frappe_pct": 4.0},
+        {"fecha": "2026-01-03", "frappe_pct": 6.0},
+        {"fecha": "2026-01-04", "frappe_pct": 10.0},
+        {"fecha": "2026-01-05", "frappe_pct": 12.0},
+        {"fecha": "2026-01-06", "frappe_pct": 14.0},
+    ]
+    clima = [
+        {"fecha": "2026-01-01", "temp_max": 15.0},
+        {"fecha": "2026-01-02", "temp_max": 16.0},
+        {"fecha": "2026-01-03", "temp_max": 17.0},
+        {"fecha": "2026-01-04", "temp_max": 32.0},
+        {"fecha": "2026-01-05", "temp_max": 33.0},
+        {"fecha": "2026-01-06", "temp_max": 34.0},
+    ]
+    resultado = metrics.ventas_por_banda_temperatura(dias, clima, "frappe_pct")
+    assert resultado == [
+        {"banda": "< 20°C", "n_dias": 3, "promedio": 4.0},
+        {"banda": "> 30°C", "n_dias": 3, "promedio": 12.0},
+    ]
+
+
+def test_ventas_por_banda_temperatura_omite_bandas_con_pocos_dias():
+    # Solo 2 días con clima conocido -- menos que _MIN_DIAS_BANDA_TEMPERATURA.
+    dias = [
+        {"fecha": "2026-01-01", "ventas_totales": 100.0},
+        {"fecha": "2026-01-02", "ventas_totales": 200.0},
+    ]
+    clima = [
+        {"fecha": "2026-01-01", "temp_max": 22.0},
+        {"fecha": "2026-01-02", "temp_max": 23.0},
+    ]
+    assert metrics.ventas_por_banda_temperatura(dias, clima, "ventas_totales") is None
+
+
+def test_ventas_por_banda_temperatura_ignora_dias_sin_clima():
+    dias = [{"fecha": "2026-01-01", "ventas_totales": 100.0}]
+    clima: list[dict] = []
+    assert metrics.ventas_por_banda_temperatura(dias, clima, "ventas_totales") is None

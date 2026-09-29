@@ -81,3 +81,45 @@ def clima_dia(fecha: str) -> dict | None:
         "temp_max": temps[idx] if idx < len(temps) else None,
         "lluvia_mm": lluvias[idx] if idx < len(lluvias) else None,
     }
+
+
+def clima_rango(desde: str, hasta: str) -> list[dict]:
+    """Igual que clima_dia, pero para un RANGO completo en UNA sola
+    llamada HTTP -- necesario para análisis de tendencia (¿se comportan
+    distinto los días calurosos EN GENERAL?, no solo "qué tiempo hizo
+    hoy"). El archivo histórico de Open-Meteo ya acepta start_date/
+    end_date como rango real -- clima_dia simplemente nunca lo
+    aprovechaba (pedía un día a la vez).
+
+    Solo sirve para fechas YA PASADAS (API de archivo) -- `hasta` se
+    recorta a hoy si viene más adelante; para el pronóstico de días
+    futuros se sigue usando clima_dia, uno por uno.
+
+    Devuelve una fila por fecha del rango (mismo formato que clima_dia:
+    fecha/temp_max/lluvia_mm) -- lista vacía si el servicio no respondió
+    o el rango quedó vacío."""
+    hasta = min(hasta, dt.date.today().isoformat())
+    if desde > hasta:
+        return []
+
+    url = (
+        "https://archive-api.open-meteo.com/v1/archive"
+        f"?latitude={LATITUD}&longitude={LONGITUD}"
+        f"&start_date={desde}&end_date={hasta}"
+        f"&daily=temperature_2m_max,precipitation_sum&timezone={ZONA_HORARIA}"
+    )
+    datos = _pedir(url)
+    if not datos or "daily" not in datos:
+        return []
+
+    fechas = datos["daily"].get("time", [])
+    temps = datos["daily"].get("temperature_2m_max", [])
+    lluvias = datos["daily"].get("precipitation_sum", [])
+    return [
+        {
+            "fecha": f,
+            "temp_max": temps[i] if i < len(temps) else None,
+            "lluvia_mm": lluvias[i] if i < len(lluvias) else None,
+        }
+        for i, f in enumerate(fechas)
+    ]

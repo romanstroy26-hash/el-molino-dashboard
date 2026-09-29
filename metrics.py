@@ -414,6 +414,74 @@ def ventas_por_franja_dia(engine: Engine, granularidad: str, sucursal: str | Non
     return salida
 
 
+# Bandas de temperatura -- cortes redondos de 5°C, no inventados para
+# "cuadrar" con este negocio en particular (mismo espíritu que los
+# umbrales de ABC o las franjas del día). Lista de tuplas porque el orden
+# importa para el gráfico -- (nombre, desde °C inclusive, hasta °C
+# exclusive; None = sin límite en ese extremo).
+BANDAS_TEMPERATURA = [
+    ("< 20°C", None, 20),
+    ("20-25°C", 20, 25),
+    ("25-30°C", 25, 30),
+    ("> 30°C", 30, None),
+]
+
+# Menos de esto días en una banda -- promedio poco confiable (un solo día
+# raro decide "el promedio" de toda la banda). Se omite esa banda entera
+# antes que mostrar un número que parece sólido y no lo es.
+_MIN_DIAS_BANDA_TEMPERATURA = 3
+
+
+def _banda_de_temp(temp: float | None) -> str | None:
+    if temp is None:
+        return None
+    for nombre, ini, fin in BANDAS_TEMPERATURA:
+        if (ini is None or temp >= ini) and (fin is None or temp < fin):
+            return nombre
+    return None
+
+
+def ventas_por_banda_temperatura(dias_datos: list[dict], clima_datos: list[dict],
+                                  campo: str) -> list[dict] | None:
+    """Promedio de `campo` (por ejemplo frappe_pct o ventas_totales, del
+    resultado de serie_por_periodo con granularidad "dia") agrupado por
+    banda de temperatura máxima de ese día (ver BANDAS_TEMPERATURA) --
+    para la pregunta "¿se comportan distinto los días calurosos, EN
+    GENERAL?" sin que nadie tenga que leer un scatter plot o un
+    coeficiente de correlación -- solo el promedio simple por banda.
+
+    Es una COINCIDENCIA observada, no una causa probada -- mismo
+    principio que festivo_cercano/clima.clima_dia en el resto del
+    dashboard: se muestra el patrón, la explicación queda para quien lee.
+
+    Función PURA (sin acceso a la base ni a la red) -- junta dos listas
+    ya cargadas, por fecha. None si no hay suficiente cruce entre las
+    dos series como para formar ni una sola banda con
+    _MIN_DIAS_BANDA_TEMPERATURA días."""
+    temp_por_fecha = {d["fecha"]: d.get("temp_max") for d in clima_datos}
+
+    por_banda: dict[str, list[float]] = defaultdict(list)
+    for d in dias_datos:
+        valor = d.get(campo)
+        if valor is None:
+            continue
+        banda = _banda_de_temp(temp_por_fecha.get(d["fecha"]))
+        if banda is None:
+            continue
+        por_banda[banda].append(valor)
+
+    salida = []
+    for nombre, _, _ in BANDAS_TEMPERATURA:
+        valores = por_banda.get(nombre, [])
+        if len(valores) < _MIN_DIAS_BANDA_TEMPERATURA:
+            continue
+        salida.append({
+            "banda": nombre, "n_dias": len(valores),
+            "promedio": round(sum(valores) / len(valores), 2),
+        })
+    return salida or None
+
+
 def patron_horario_bebidas(engine: Engine, sucursal: str | None = None,
                             desde: str | None = None, hasta: str | None = None) -> list[dict]:
     """La MISMA partición de cuatro categorías que serie_por_periodo, pero
