@@ -52,6 +52,7 @@ from db import (
 )
 import clima
 import metrics
+import plan_fisico_ruso
 import tiempo
 
 # Палитра дашборда -- взята из образца (лесная зелень, тёплое золото,
@@ -369,6 +370,19 @@ def _cache_ventas_por_franja_dia(_engine, granularidad, sucursal, desde, hasta):
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_ultima_carga(_engine):
     return metrics.ultima_carga(_engine)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_comparar_plan_fisico(_engine, sucursal):
+    return metrics.comparar_plan_fisico(_engine, sucursal, plan_fisico_ruso.PLAN_POR_DIA)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_comparar_plan_fisico_por_producto(_engine, sucursal):
+    fechas = sorted(plan_fisico_ruso.PLAN_POR_DIA)
+    return metrics.comparar_plan_fisico_por_producto(
+        _engine, sucursal, fechas, plan_fisico_ruso.PLAN_POR_PRODUCTO, n=12,
+    )
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
@@ -2624,6 +2638,131 @@ def page_planificacion():
             "всегда плохо, если она в основном со знаком «плюс» (бизнес "
             "растёт быстрее модели) -- смотри вместе с разделом выше."
         )
+
+    # ---- Физический план vs факт (бумажный план, только El Molino Ruso) -----
+    # Не ручной план из таблицы выше (тот -- только Panadería, вводится в
+    # самом дашборде) -- а РЕАЛЬНЫЙ план на бумаге, который на кухне уже
+    # ведут каждый день (фото/PDF из папки Google Диска, импортировано
+    # один раз 2026-09-29 -- см. plan_fisico_ruso.py, это не автопайплайн,
+    # новые даты сами не появятся). Panadería + Pastelería вместе (так и
+    # планируют на бумаге), без "Bolsa*" (упаковка). Существует только
+    # для точки "El Molino Ruso" -- там, где физически ведут этот план.
+    st.subheader("Физический план vs факт (бумажный план, El Molino Ruso)")
+    if sucursal_filtro != "El Molino Ruso":
+        st.info(
+            "Эти данные есть только для точки «El Molino Ruso» -- выбери "
+            "её в фильтре «Точка» слева, чтобы увидеть сравнение."
+        )
+    else:
+        fechas_plan_fisico = sorted(plan_fisico_ruso.PLAN_POR_DIA)
+        st.caption(
+            f"Период {fechas_plan_fisico[0]} — {fechas_plan_fisico[-1]} "
+            f"-- фиксированный, по фотографиям бумажного плана за эти "
+            f"даты (не связан с «Диапазон дат» слева -- других дат "
+            f"просто нет, план физически не сфотографирован)."
+        )
+        comparacion_dia = _cache_comparar_plan_fisico(engine, sucursal_filtro)
+        df_plan_fisico = pd.DataFrame(comparacion_dia)
+
+        largo_pf = df_plan_fisico.melt(
+            id_vars=["fecha"], value_vars=["plan", "real"],
+            var_name="serie", value_name="valor",
+        ).dropna(subset=["valor"])
+        largo_pf["serie"] = largo_pf["serie"].map({"plan": "План (бумага)", "real": "Факт"})
+        grafico_pf = alt.Chart(largo_pf).mark_line(point=True, strokeWidth=2.5).encode(
+            x=alt.X("fecha:T", title=None),
+            y=alt.Y("valor:Q", title="Штук (Panadería + Pastelería)"),
+            color=alt.Color(
+                "serie:N", title=None,
+                scale=alt.Scale(domain=["Факт", "План (бумага)"],
+                                 range=[COLOR_PRIMARIO, COLOR_SECUNDARIO]),
+                legend=alt.Legend(orient="bottom"),
+            ),
+            strokeDash=alt.condition(
+                alt.datum.serie == "План (бумага)", alt.value([5, 4]), alt.value([1, 0]),
+            ),
+            tooltip=[
+                alt.Tooltip("fecha:T", title="Дата"),
+                alt.Tooltip("serie:N", title="Ряд"),
+                alt.Tooltip("valor:Q", title="Штук", format=",.0f"),
+            ],
+        ).properties(height=300)
+        st.altair_chart(grafico_pf, width="stretch")
+
+        con_ambos = [d for d in comparacion_dia if d["real"] is not None]
+        if con_ambos:
+            suma_plan = sum(d["plan"] for d in con_ambos)
+            suma_real = sum(d["real"] for d in con_ambos)
+            delta_total = 100 * (suma_real - suma_plan) / suma_plan if suma_plan else 0.0
+            st.write(
+                f"За {len(con_ambos)} дней: по бумажному плану должно "
+                f"было выйти {suma_plan:,.0f} шт, реально продано "
+                f"{suma_real:,.0f} шт ({delta_total:+.1f}%)."
+            )
+        st.caption(
+            "«План» здесь -- не прогноз и не тот же ручной план, что в "
+            "таблице выше (тот -- только Panadería, задаётся отдельно в "
+            "самом дашборде); это то, что реально было написано на "
+            "бумаге на этот день."
+        )
+
+        # ---- По позициям меню -------------------------------------------------
+        st.subheader("По позициям: где план разошёлся с фактом больше всего")
+        datos_prod = _cache_comparar_plan_fisico_por_producto(engine, sucursal_filtro)
+        col_sobre, col_sub = st.columns(2)
+        with col_sobre:
+            st.write("📉 **Планируют больше, чем продают**")
+            if datos_prod["sobreproducidos"]:
+                st.dataframe(
+                    pd.DataFrame(datos_prod["sobreproducidos"]).rename(columns={
+                        "platillo": "Позиция", "plan": "План, шт",
+                        "real": "Факт, шт", "diff": "План − факт",
+                    }),
+                    width="stretch", hide_index=True,
+                )
+        with col_sub:
+            st.write("📈 **Продают больше, чем планируют**")
+            if datos_prod["subproducidos"]:
+                st.dataframe(
+                    pd.DataFrame(datos_prod["subproducidos"]).rename(columns={
+                        "platillo": "Позиция", "plan": "План, шт",
+                        "real": "Факт, шт", "diff": "План − факт",
+                    }),
+                    width="stretch", hide_index=True,
+                )
+        st.caption(
+            f"Сумма за весь период ({len(plan_fisico_ruso.PLAN_POR_DIA)} "
+            f"дней). Из {datos_prod['n_emparejados']} позиций, которые "
+            f"есть и в бумажном плане, и в реальных продажах."
+        )
+
+        if datos_prod["solo_en_plan"] or datos_prod["solo_en_real"]:
+            with st.expander("Позиции, которые не удалось сопоставить"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.write("Есть в плане, не найдено в продажах")
+                    if datos_prod["solo_en_plan"]:
+                        st.dataframe(
+                            pd.DataFrame(datos_prod["solo_en_plan"]).rename(
+                                columns={"platillo": "Позиция", "plan": "План, шт"},
+                            ),
+                            width="stretch", hide_index=True,
+                        )
+                with col_b:
+                    st.write("Есть в продажах, не найдено в плане")
+                    if datos_prod["solo_en_real"]:
+                        st.dataframe(
+                            pd.DataFrame(datos_prod["solo_en_real"]).rename(
+                                columns={"platillo": "Позиция", "real": "Факт, шт"},
+                            ),
+                            width="stretch", hide_index=True,
+                        )
+                st.caption(
+                    "Не значит «не производилось» или «не продавалось» -- "
+                    "иногда это просто другое написание названия в кассе "
+                    "или в бумажном плане, которое не удалось сопоставить "
+                    "автоматически."
+                )
 
 
 # =============================================================================

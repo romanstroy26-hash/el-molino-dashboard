@@ -321,3 +321,17 @@ def test_ventas_por_banda_temperatura_ignora_dias_sin_clima():
     dias = [{"fecha": "2026-01-01", "ventas_totales": 100.0}]
     clima: list[dict] = []
     assert metrics.ventas_por_banda_temperatura(dias, clima, "ventas_totales") is None
+
+
+# ---- _normaliza_nombre -------------------------------------------------------------
+
+def test_normaliza_nombre_acentos_y_mayusculas():
+    assert metrics._normaliza_nombre("Croissant Frambuesa") == "CROISSANT FRAMBUESA"
+
+
+def test_normaliza_nombre_punto_final():
+    assert metrics._normaliza_nombre("MACARONS.") == "MACARONS"
+
+
+def test_normaliza_nombre_espacios_dobles():
+    assert metrics._normaliza_nombre("Concha  Chocolate.") == "CONCHA CHOCOLATE"

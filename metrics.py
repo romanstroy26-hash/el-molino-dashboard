@@ -13,6 +13,7 @@ metrics.py -- Блок 4: считает показатели из базы (db.
 
 import datetime as dt
 import math
+import unicodedata
 from collections import defaultdict
 
 from sqlalchemy import bindparam, text
@@ -1834,6 +1835,114 @@ def precision_pronostico(dias: list[dict], campo_pronostico: str = "pronostico_u
         "mape_anterior": round(sum(abs(f["error_pct"]) for f in primera) / len(primera), 1),
         "mape_reciente": round(sum(abs(f["error_pct"]) for f in segunda) / len(segunda), 1),
         "serie": serie,
+    }
+
+
+def _normaliza_nombre(s: str) -> str:
+    """Para comparar el nombre de un producto del plan FÍSICO (papel/PDF,
+    escrito a mano por quien arma el plan) contra el nombre real en la
+    base (Wansoft) -- acentos, mayúsculas/minúsculas y un punto final
+    suelto (la base tiene alguno, ej. "MACARONS.") no deberían contar
+    como "otro producto"."""
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.upper().strip().rstrip(".").strip()
+    return " ".join(s.split())
+
+
+def comparar_plan_fisico(engine: Engine, sucursal: str, plan_por_dia: dict[str, float]) -> list[dict]:
+    """Plan de producción FÍSICO (en papel, ver plan_fisico_ruso.py) contra
+    ventas reales -- Panadería + Pastelería juntas (así se plane en
+    papel, no solo Panadería como el resto de "Планирование"), excluyendo
+    "Bolsa*" (empaque, ver EXCLUIR_BOLSA_SQL). `plan_por_dia` -- fecha ISO
+    -> piezas planeadas (importado una sola vez de fotos/PDF, no viene de
+    la base -- ver plan_fisico_ruso.py).
+
+    Agregado en SQL (GROUP BY fecha), no fila por fila -- mismo motivo que
+    el resto de funciones de este archivo con tablas grandes."""
+    if not plan_por_dia:
+        return []
+    fechas = sorted(plan_por_dia)
+    sql = (
+        "SELECT fecha, SUM(cantidad) AS unidades FROM sales_lines "
+        "WHERE sucursal = :sucursal AND tipo_grupo IN ('PANADERIA', 'PASTELERIA')"
+        + EXCLUIR_BOLSA_SQL + " AND fecha = ANY(:fechas) GROUP BY fecha"
+    )
+    with engine.connect() as conn:
+        filas = list(conn.execute(text(sql), {"sucursal": sucursal, "fechas": fechas}).mappings())
+    real_por_fecha = {f["fecha"]: f["unidades"] for f in filas}
+
+    salida = []
+    for fecha in fechas:
+        plan = plan_por_dia[fecha]
+        real = real_por_fecha.get(fecha)
+        salida.append({
+            "fecha": fecha, "plan": round(plan, 1),
+            "real": round(real, 1) if real is not None else None,
+            "delta_pct": _delta_pct(real, plan) if real is not None else None,
+        })
+    return salida
+
+
+def comparar_plan_fisico_por_producto(engine: Engine, sucursal: str, fechas: list[str],
+                                       plan_por_producto: dict[str, float], n: int = 15) -> dict:
+    """Lo mismo que comparar_plan_fisico, pero por POSICIÓN DE MENÚ en vez
+    de por día, sumado sobre TODO el período -- "¿qué posiciones se
+    producen de más (podrían recortarse) y cuáles de menos (se agotan
+    antes de lo planeado)?". El emparejamiento es por NOMBRE normalizado
+    (ver _normaliza_nombre) -- una posición que no aparece en ambos lados
+    queda en "solo_en_plan" o "solo_en_real" en vez de forzarse a un
+    emparejamiento dudoso; esto último puede incluir productos con otro
+    nombre en la base (no solo productos realmente ausentes del plan)."""
+    plan_normalizado: dict[str, float] = defaultdict(float)
+    for nombre, cantidad in plan_por_producto.items():
+        plan_normalizado[_normaliza_nombre(nombre)] += cantidad
+
+    sql = (
+        "SELECT platillo, SUM(cantidad) AS unidades FROM sales_lines "
+        "WHERE sucursal = :sucursal AND tipo_grupo IN ('PANADERIA', 'PASTELERIA')"
+        + EXCLUIR_BOLSA_SQL + " AND fecha = ANY(:fechas) GROUP BY platillo"
+    )
+    with engine.connect() as conn:
+        filas = list(conn.execute(text(sql), {"sucursal": sucursal, "fechas": fechas}).mappings())
+
+    real_normalizado: dict[str, float] = defaultdict(float)
+    nombre_real_de = {}
+    for f in filas:
+        clave = _normaliza_nombre(f["platillo"] or "")
+        real_normalizado[clave] += f["unidades"]
+        nombre_real_de[clave] = f["platillo"]
+
+    claves = set(plan_normalizado) | set(real_normalizado)
+    emparejados = []
+    solo_en_plan = []
+    solo_en_real = []
+    for clave in claves:
+        en_plan = clave in plan_normalizado
+        en_real = clave in real_normalizado
+        if en_plan and en_real:
+            plan_val, real_val = plan_normalizado[clave], real_normalizado[clave]
+            emparejados.append({
+                "platillo": clave, "plan": round(plan_val, 1), "real": round(real_val, 1),
+                "diff": round(plan_val - real_val, 1),
+            })
+        elif en_plan:
+            solo_en_plan.append({"platillo": clave, "plan": round(plan_normalizado[clave], 1)})
+        else:
+            solo_en_real.append({
+                "platillo": nombre_real_de[clave], "real": round(real_normalizado[clave], 1),
+            })
+
+    sobreproducidos = sorted(emparejados, key=lambda f: -f["diff"])[:n]
+    subproducidos = sorted(emparejados, key=lambda f: f["diff"])[:n]
+    solo_en_plan.sort(key=lambda f: -f["plan"])
+    solo_en_real.sort(key=lambda f: -f["real"])
+
+    return {
+        "n_emparejados": len(emparejados),
+        "sobreproducidos": sobreproducidos,
+        "subproducidos": subproducidos,
+        "solo_en_plan": solo_en_plan[:n],
+        "solo_en_real": solo_en_real[:n],
     }
 
 
