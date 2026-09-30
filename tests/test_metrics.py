@@ -335,3 +335,95 @@ def test_normaliza_nombre_punto_final():
 
 def test_normaliza_nombre_espacios_dobles():
     assert metrics._normaliza_nombre("Concha  Chocolate.") == "CONCHA CHOCOLATE"
+
+
+# ---- estacionalidad_semana / texto_estacionalidad -----------------------------
+
+def _serie_semanas(valores_por_dia_semana: dict[int, float], n_semanas: int = 4) -> list[dict]:
+    """Genera una serie diaria de `n_semanas` semanas completas, repitiendo
+    el mismo patrón por día de semana cada semana -- para tests de
+    estacionalidad_semana, que necesita al menos 2 muestras por día."""
+    base = dt.date(2026, 1, 5)  # lunes
+    filas = []
+    for semana in range(n_semanas):
+        for dia in range(7):
+            fecha = base + dt.timedelta(days=semana * 7 + dia)
+            filas.append({"fecha": fecha.isoformat(), "ventas_totales": valores_por_dia_semana[dia]})
+    return filas
+
+
+def test_estacionalidad_semana_indice_100_dia_promedio():
+    # Todos los días iguales -> índice 100 en todos.
+    serie = _serie_semanas({i: 1000.0 for i in range(7)})
+    indices = metrics.estacionalidad_semana(serie)
+    assert len(indices) == 7
+    assert all(d["indice"] == 100.0 for d in indices)
+
+
+def test_estacionalidad_semana_dia_flojo_y_fuerte():
+    valores = {i: 1000.0 for i in range(7)}
+    valores[5] = 1500.0  # sábado fuerte
+    valores[1] = 500.0   # martes flojo
+    serie = _serie_semanas(valores)
+    indices = {d["dia_semana"]: d["indice"] for d in metrics.estacionalidad_semana(serie)}
+    assert indices["суббота"] > 100
+    assert indices["вторник"] < 100
+
+
+def test_estacionalidad_semana_pocas_muestras_se_omite():
+    # Solo 1 semana -- no hay 2 muestras por día, no debe devolver nada.
+    serie = _serie_semanas({i: 1000.0 for i in range(7)}, n_semanas=1)
+    assert metrics.estacionalidad_semana(serie) == []
+
+
+def test_estacionalidad_semana_lista_vacia():
+    assert metrics.estacionalidad_semana([]) == []
+
+
+def test_texto_estacionalidad_sin_desviacion_es_none():
+    indices = [{"dia_semana": "lunes", "indice": 101.0, "n_dias": 4}]
+    assert metrics.texto_estacionalidad(indices) is None
+
+
+def test_texto_estacionalidad_con_desviacion():
+    indices = [
+        {"dia_semana": "суббота", "indice": 130.0, "n_dias": 4},
+        {"dia_semana": "вторник", "indice": 80.0, "n_dias": 4},
+    ]
+    texto = metrics.texto_estacionalidad(indices)
+    assert "суббота" in texto
+    assert "вторник" in texto
+
+
+# ---- generar_digest_dia -------------------------------------------------------
+
+def test_generar_digest_dia_sin_senales_es_lista_vacia():
+    resumen = {"dia_cerrado": True, "dia_semana": "понедельник", "ventas_vs_tipico_pct": 1.0, "racha": None}
+    comparacion = {"dia_vs_semana_pasada": {"disponible": False}, "semana_vs_semana_pasada": {}}
+    assert metrics.generar_digest_dia(resumen, comparacion, None) == []
+
+
+def test_generar_digest_dia_racha_y_mezcla():
+    resumen = {
+        "dia_cerrado": True, "dia_semana": "понедельник",
+        "ventas_vs_tipico_pct": 2.0,
+        "racha": {"dias": 4, "direccion": "por_encima"},
+    }
+    comparacion = {"dia_vs_semana_pasada": {"disponible": False}, "semana_vs_semana_pasada": {}}
+    mezcla = {"categoria": "Café", "pct": 30.0, "tipico_pct": 20.0, "dif_pt": 10.0, "festivo": None}
+    digest = metrics.generar_digest_dia(resumen, comparacion, mezcla)
+    assert any("день подряд" in t for t in digest)
+    assert any("Café" in t for t in digest)
+
+
+def test_generar_digest_dia_ordena_por_magnitud():
+    resumen = {"dia_cerrado": False, "dia_semana": "понедельник", "racha": None}
+    comparacion = {
+        "dia_vs_semana_pasada": {"disponible": False},
+        "semana_vs_semana_pasada": {"ventas_actual": 50.0, "ventas_pasada": 100.0},
+    }
+    mezcla = {"categoria": "Panadería", "pct": 55.0, "tipico_pct": 50.0, "dif_pt": 5.0, "festivo": None}
+    digest = metrics.generar_digest_dia(resumen, comparacion, mezcla)
+    # La caída semanal (-50%) es mucho más grande que el desvío de mezcla
+    # (5 пт) -- debe aparecer primero.
+    assert "7 дней" in digest[0]

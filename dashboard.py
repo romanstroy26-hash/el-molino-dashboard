@@ -162,6 +162,28 @@ def _db_label() -> str:
     return f"облако: {url.drivername}, база «{url.database}» на {url.host}"
 
 
+def _preset_rango_callback(key_prefix: str, dias: int, fecha_min: dt.date,
+                            fecha_max: dt.date | None) -> None:
+    """on_click, не прямая запись в session_state в основном коде страницы --
+    к моменту отрисовки кнопки виджеты date_input этого же key_prefix уже
+    созданы в ЭТОМ прогоне, и прямая запись упала бы с
+    StreamlitWidgetAlreadyInstantiatedError (тот же приём, что и
+    _ir_a_horas_callback). on_click выполняется ДО начала следующего
+    прогона, когда виджеты ещё не пересозданы -- туда можно писать."""
+    ancla = tiempo.hoy()
+    if fecha_max is not None:
+        ancla = min(ancla, fecha_max)
+    ancla = max(ancla, fecha_min)
+    st.session_state[f"{key_prefix}_hasta"] = ancla
+    st.session_state[f"{key_prefix}_desde"] = max(fecha_min, ancla - dt.timedelta(days=dias - 1))
+
+
+# Пресеты -- всегда от "сегодня" назад (см. _preset_rango_callback), а не
+# от текущих границ поля: так кнопка "Неделя" значит одно и то же на
+# любой странице, а не "неделя от того, что там сейчас выбрано".
+_PRESETS_RANGO_FECHAS = [("Сегодня", 1), ("Неделя", 7), ("Месяц", 30), ("Квартал", 90)]
+
+
 def _selector_rango_fechas(key_prefix: str, fecha_min: dt.date, desde_default: dt.date,
                            hasta_default: dt.date, fecha_max: dt.date | None = None) -> tuple[dt.date, dt.date]:
     """Два отдельных поля даты ("С" / "По") вместо одного date_input с
@@ -170,8 +192,20 @@ def _selector_rango_fechas(key_prefix: str, fecha_min: dt.date, desde_default: d
     всё заново, приходится начинать сначала. Два независимых календаря
     этой проблемы не имеют -- один клик на каждый, готово.
 
+    Сверху -- кнопки-пресеты (Сегодня/Неделя/Месяц/Квартал): для частого
+    случая "посмотреть последнюю неделю/месяц" не нужно кликать по обоим
+    календарям вручную. Поля "С"/"По" остаются -- для произвольного
+    диапазона, который пресеты не покрывают.
+
     fecha_max=None -- без верхней границы (нужно для "Планирование",
     где можно выбрать дату В БУДУЩЕМ, за пределами последних продаж)."""
+    cols_preset = st.sidebar.columns(len(_PRESETS_RANGO_FECHAS))
+    for col, (etiqueta, dias) in zip(cols_preset, _PRESETS_RANGO_FECHAS):
+        col.button(
+            etiqueta, key=f"{key_prefix}_preset_{dias}", width="stretch",
+            on_click=_preset_rango_callback, args=(key_prefix, dias, fecha_min, fecha_max),
+        )
+
     col_desde, col_hasta = st.sidebar.columns(2)
     desde = col_desde.date_input(
         "С", value=desde_default, min_value=fecha_min, max_value=fecha_max,
@@ -920,6 +954,9 @@ def page_home():
 
     resumen = _cache_resumen_dia_con_tipico(engine, fecha_elegida, sucursal_filtro)
     comparacion = _cache_comparacion_semanal(engine, fecha_elegida, sucursal_filtro)
+    # Считаем один раз здесь (а не заново внутри блока с карточками ниже) --
+    # нужен и там (подпись под категориями), и в дайджесте наверху страницы.
+    mezcla = metrics.analizar_mezcla_categorias(resumen)
 
     # Сравнение с "типичным {день недели}" честно только для ЗАКРЫТОГО
     # дня -- для открытого это была бы выручка за ПОЛДНЯ против типичной
@@ -954,6 +991,17 @@ def page_home():
             f"справа это учитывают: они считают по последнему ЗАКРЫТОМУ "
             f"дню."
         )
+
+    # ---- Дайджест: что изменилось -------------------------------------------
+    # Те же сигналы, что и карточки/подписи ниже (типичный день, серия,
+    # доля категорий, сравнение с прошлой неделей) -- но собранные в 2-4
+    # строки ТЕКСТОМ наверху, чтобы не приходилось сверять каждую
+    # карточку по отдельности, чтобы понять "стоит ли вообще беспокоиться
+    # сегодня". Молчит, если ничего не отклонилось заметно -- см.
+    # metrics.generar_digest_dia.
+    digest = metrics.generar_digest_dia(resumen, comparacion, mezcla)
+    if digest:
+        st.info("\n\n".join(f"• {texto}" for texto in digest))
 
     # Слева -- все цифры за день (в две строки: сначала общие цифры, потом
     # доли по категориям), справа -- два окна сравнения с прошлой неделей.
@@ -1066,7 +1114,7 @@ def page_home():
         # дня -- один короткий вывод вместо того, чтобы сверять четыре
         # "(+N.N пт)" в подписях глазами. Ничего не выводит, если ни одна
         # категория не сдвинулась достаточно (см. metrics._UMBRAL_DIF_CATEGORIA_PT).
-        mezcla = metrics.analizar_mezcla_categorias(resumen)
+        # mezcla уже посчитана выше, перед дайджестом.
         if mezcla:
             direccion_cat = "выше" if mezcla["dif_pt"] > 0 else "ниже"
             texto_mezcla = (
@@ -1364,480 +1412,541 @@ def page_dashboard():
     else:
         dinero_prev = shtuki_prev = pct_prev = None
 
-    # ---- KPI: 4 категории рядом, в измерении из фильтра, со стрелкой ---------
-    st.subheader("Напитки в общих продажах")
-    tarjetas = st.columns(4)
-    for col, cat in zip(tarjetas, _KATEGORII_NAPITKOV):
-        delta_txt = None
-        if medida_label == "Доля, % от продаж":
-            valor_txt = f"{pct_de_ventas[cat]:.1f}%"
-            if pct_prev is not None:
-                delta_txt = f"{pct_de_ventas[cat] - pct_prev[cat]:+.1f} пт"
-        elif medida_label == "Выручка, $":
-            valor_txt = f"{dinero[cat]:,.0f} $"
-            if dinero_prev is not None and dinero_prev[cat]:
-                delta_txt = f"{100 * (dinero[cat] - dinero_prev[cat]) / dinero_prev[cat]:+.1f}%"
-        else:
-            valor_txt = f"{shtuki[cat]:,.0f} шт"
-            if shtuki_prev is not None and shtuki_prev[cat]:
-                delta_txt = f"{100 * (shtuki[cat] - shtuki_prev[cat]) / shtuki_prev[cat]:+.1f}%"
-        col.metric(cat, valor_txt, delta=delta_txt)
-        if medida_label != "Выручка, $":
-            col.caption(f"{dinero[cat]:,.0f} $")
+    tab_dinamika, tab_dolya, tab_horas, tab_menu, tab_puntos = st.tabs([
+        "📈 Динамика", "⚖️ Доля vs выручка",
+        "🕐 По часам и погода", "🍽 Состав меню", "📍 Точки",
+    ])
 
-    if filas_prev:
-        st.caption(
-            f"Продажи всего (все категории меню, не только напитки): "
-            f"{ventas_total:,.0f} $. Стрелка -- сравнение с таким же по длине "
-            f"периодом непосредственно перед выбранным "
-            f"({prev_desde} -- {prev_hasta}, {dney_diapazon} дн.)."
-        )
-    else:
-        st.caption(
-            f"Продажи всего (все категории меню, не только напитки): "
-            f"{ventas_total:,.0f} $. Для стрелки-сравнения нет данных за "
-            f"предыдущий период такой же длины."
-        )
-
-    # ---- ОБЩИЙ график: 4 категории, измерение -- из фильтра слева -----------
-    st.subheader(f"Динамика: {medida_label.lower()}")
-    largo = df.melt(
-        id_vars=["период", "periodo_inicio"],
-        value_vars=list(medida["columnas"].values()),
-        var_name="_col", value_name="valor",
-    )
-    col_a_cat = {v: k for k, v in medida["columnas"].items()}
-    largo["categoria"] = largo["_col"].map(col_a_cat)
-
-    # "По дням" -- каждая точка это ОТДЕЛЬНЫЙ день, а не период в несколько
-    # недель, как декада/квинсена/месяц -- там "мес. год" достаточно
-    # (соседние точки и так далеко друг от друга по времени), а здесь
-    # с тем же форматом на всех подписях было бы одно и то же "Sep 26" --
-    # число дня (28.09) единственное, что различает соседние точки.
-    _formato_eje_x = "%d.%m" if granularidad == "dia" else "%b %y"
-    grafico = alt.Chart(largo).mark_line(point=True, strokeWidth=2.5).encode(
-        x=alt.X("periodo_inicio:T", title=None,
-                axis=alt.Axis(labelExpr=f"timeFormat(datum.value, '{_formato_eje_x}')")),
-        y=alt.Y("valor:Q", title=medida["titulo_eje"]),
-        color=alt.Color(
-            "categoria:N",
-            scale=alt.Scale(domain=_KATEGORII_NAPITKOV,
-                             range=[_COLOR_KATEGORII[c] for c in _KATEGORII_NAPITKOV]),
-            legend=alt.Legend(title=None, orient="bottom"),
-        ),
-        strokeDash=alt.condition(
-            alt.datum.categoria == "Напитки", alt.value([5, 4]), alt.value([1, 0]),
-        ),
-        tooltip=[
-            alt.Tooltip("период:N", title="Период"),
-            alt.Tooltip("categoria:N", title="Категория"),
-            alt.Tooltip("valor:Q", title=medida_label, format=medida["formato"]),
-        ],
-    ).properties(height=380)
-    st.altair_chart(grafico, width="stretch")
-    st.caption(
-        "«Напитки» (пунктирная линия) -- это ровно сумма трёх остальных: "
-        "кофе + фраппе + остальные напитки, в любом измерении слева."
-    )
-
-    # ---- Доля против выручки: когда расходятся -------------------------------
-    # Доля -- это ОТНОШЕНИЕ (категория / общие продажи), а не сама выручка,
-    # поэтому она может расти, даже когда сама категория падает в деньгах --
-    # если общие продажи упали ЕЩЁ сильнее (и наоборот: доля может падать
-    # при росте категории, если весь бизнес вырос ещё быстрее). Ни чистая
-    # доля, ни чистая выручка по отдельности (переключатель "Что показывать"
-    # выше) этого расхождения не показывают -- нужно видеть обе метрики сразу.
-    st.subheader("Доля против выручки: когда расходятся")
-    cat_combo = st.radio(
-        "Категория", _KATEGORII_NAPITKOV, index=0, horizontal=True, key="cat_combo",
-    )
-    col_ventas_combo = _MEDIDAS["Выручка, $"]["columnas"][cat_combo]
-    col_pct_combo = _MEDIDAS["Доля, % от продаж"]["columnas"][cat_combo]
-
-    barras_combo = alt.Chart(df).mark_bar(color=_COLOR_KATEGORII[cat_combo], opacity=0.5).encode(
-        x=alt.X("periodo_inicio:T", title=None,
-                axis=alt.Axis(labelExpr=f"timeFormat(datum.value, '{_formato_eje_x}')")),
-        y=alt.Y(f"{col_ventas_combo}:Q", title="Выручка, $"),
-        tooltip=[
-            alt.Tooltip("период:N", title="Период"),
-            alt.Tooltip(f"{col_ventas_combo}:Q", title="Выручка, $", format=",.0f"),
-        ],
-    )
-    linea_combo = alt.Chart(df).mark_line(point=True, strokeWidth=2.5, color=COLOR_TIPICO).encode(
-        x=alt.X("periodo_inicio:T", title=None),
-        y=alt.Y(f"{col_pct_combo}:Q", title="Доля от продаж, %"),
-        tooltip=[
-            alt.Tooltip("период:N", title="Период"),
-            alt.Tooltip(f"{col_pct_combo}:Q", title="Доля, %", format=".1f"),
-        ],
-    )
-    st.altair_chart(
-        alt.layer(barras_combo, linea_combo).resolve_scale(y="independent").properties(height=320),
-        width="stretch",
-    )
-    st.caption(
-        f"Столбики -- выручка «{cat_combo}» в деньгах (левая ось). Линия -- "
-        f"доля «{cat_combo}» от ВСЕХ продаж (правая ось, %). Если столбики "
-        f"идут вниз, а линия вверх (или наоборот) -- доля и выручка разошлись."
-    )
-
-    # Автоматический разбор расхождения -- сравнение тех же трёх темпов
-    # (категория / доля / общие продажи), что уже посчитаны выше для карточек
-    # KPI, только теперь явно проговорено словами, если знаки разошлись.
-    # Молчит, если доля и выручка двигались в одну сторону -- говорить не о
-    # чем, это не расхождение.
-    if dinero_prev is not None and dinero_prev[cat_combo] and pct_prev is not None and ventas_prev:
-        cambio_pct_cat = 100 * (dinero[cat_combo] - dinero_prev[cat_combo]) / dinero_prev[cat_combo]
-        cambio_pt_doля = pct_de_ventas[cat_combo] - pct_prev[cat_combo]
-        cambio_pct_total = 100 * (ventas_total - ventas_prev) / ventas_prev
-        # Расхождение -- если оба сдвига заметны (не шум около нуля) и в
-        # РАЗНЫЕ стороны. Пороги те же по духу, что metrics._UMBRAL_DESVIACION_PCT
-        # -- маленькие колебания не стоит подавать как значимое расхождение.
-        _UMBRAL_PT_DOLYA, _UMBRAL_PCT_CAT = 0.3, 1.0
-        if (abs(cambio_pt_doля) >= _UMBRAL_PT_DOLYA and abs(cambio_pct_cat) >= _UMBRAL_PCT_CAT
-                and (cambio_pt_doля > 0) != (cambio_pct_cat > 0)):
-            if cambio_pt_doля > 0:
-                st.warning(
-                    f"⚠️ Доля «{cat_combo}» выросла на {cambio_pt_doля:+.1f} пт, а выручка "
-                    f"«{cat_combo}» при этом упала на {cambio_pct_cat:.1f}% -- дело не в росте "
-                    f"«{cat_combo}», а в том, что ОБЩИЕ продажи упали ещё сильнее "
-                    f"({cambio_pct_total:+.1f}%)."
-                )
+    with tab_dinamika:
+        # ---- KPI: 4 категории рядом, в измерении из фильтра, со стрелкой ---------
+        st.subheader("Напитки в общих продажах")
+        tarjetas = st.columns(4)
+        for col, cat in zip(tarjetas, _KATEGORII_NAPITKOV):
+            delta_txt = None
+            if medida_label == "Доля, % от продаж":
+                valor_txt = f"{pct_de_ventas[cat]:.1f}%"
+                if pct_prev is not None:
+                    delta_txt = f"{pct_de_ventas[cat] - pct_prev[cat]:+.1f} пт"
+            elif medida_label == "Выручка, $":
+                valor_txt = f"{dinero[cat]:,.0f} $"
+                if dinero_prev is not None and dinero_prev[cat]:
+                    delta_txt = f"{100 * (dinero[cat] - dinero_prev[cat]) / dinero_prev[cat]:+.1f}%"
             else:
-                st.warning(
-                    f"⚠️ Доля «{cat_combo}» упала на {cambio_pt_doля:.1f} пт, хотя выручка "
-                    f"«{cat_combo}» выросла на {cambio_pct_cat:+.1f}% -- «{cat_combo}» не "
-                    f"проседает, просто ОБЩИЕ продажи выросли ещё быстрее "
-                    f"({cambio_pct_total:+.1f}%)."
-                )
+                valor_txt = f"{shtuki[cat]:,.0f} шт"
+                if shtuki_prev is not None and shtuki_prev[cat]:
+                    delta_txt = f"{100 * (shtuki[cat] - shtuki_prev[cat]) / shtuki_prev[cat]:+.1f}%"
+            col.metric(cat, valor_txt, delta=delta_txt)
+            if medida_label != "Выручка, $":
+                col.caption(f"{dinero[cat]:,.0f} $")
 
-    # ---- Когда именно продаются напитки: по часам дня -----------------------
-    # Отвечает не на "сколько", а на "в какое время" -- та же идея, что
-    # температура в присланном примере (жара -> тянет на холодное), только
-    # без внешних данных: час чека уже есть в базе. Три категории, не
-    # четыре -- "Напитки" здесь не нужна отдельной линией, это и так вся
-    # высота столбика (кофе+фраппе+остальные).
-    patron_horas = _cache_patron_horario_bebidas(
-        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
-    )
-    if any(h["cafe_total"] or h["frappe_total"] or h["otras_bebidas_total"] for h in patron_horas):
-        st.subheader("Когда продаются напитки, по часам дня")
-        df_horas = pd.DataFrame(patron_horas)
-        # Часы вне работы точек (ночь) всегда пустые -- обрезаем их, чтобы
-        # график не тянулся от 0 до 23, а показывал только рабочий день.
-        _HORA_DESDE, _HORA_HASTA = 6, 22
-        df_horas = df_horas[
-            (df_horas["hora"] >= _HORA_DESDE) & (df_horas["hora"] <= _HORA_HASTA)
-        ]
-
-        _KAT_HORAS = ["Кофе", "Фраппе", "Остальные напитки"]
-        _COL_HORAS_PCT = {"Кофе": "cafe_total", "Фраппе": "frappe_total",
-                           "Остальные напитки": "otras_bebidas_total"}
-        if medida_label == "Штуки, шт":
-            columnas_h = {"Кофе": "unidades_cafe", "Фраппе": "unidades_frappe",
-                          "Остальные напитки": "unidades_otras_bebidas"}
-            apilado, titulo_h, formato_h = "zero", "шт", ",.0f"
-        elif medida_label == "Выручка, $":
-            columnas_h = _COL_HORAS_PCT
-            apilado, titulo_h, formato_h = "zero", "$", ",.0f"
+        if filas_prev:
+            st.caption(
+                f"Продажи всего (все категории меню, не только напитки): "
+                f"{ventas_total:,.0f} $. Стрелка -- сравнение с таким же по длине "
+                f"периодом непосредственно перед выбранным "
+                f"({prev_desde} -- {prev_hasta}, {dney_diapazon} дн.)."
+            )
         else:
-            # "Доля, % от продаж" здесь считается иначе, чем на карточках
-            # выше (там -- % от ВСЕХ продаж точки): по часам честнее
-            # показать % от напитков ИМЕННО ЭТОГО часа -- так видно, как
-            # МЕНЯЕТСЯ состав в течение дня, а не только когда людно.
-            # stack="normalize" в Altair сам считает эту долю из сырых $.
-            columnas_h = _COL_HORAS_PCT
-            apilado, titulo_h, formato_h = "normalize", "% от напитков этого часа", ".1f"
+            st.caption(
+                f"Продажи всего (все категории меню, не только напитки): "
+                f"{ventas_total:,.0f} $. Для стрелки-сравнения нет данных за "
+                f"предыдущий период такой же длины."
+            )
 
-        largo_horas = df_horas.melt(
-            id_vars=["hora"], value_vars=list(columnas_h.values()),
+        # ---- ОБЩИЙ график: 4 категории, измерение -- из фильтра слева -----------
+        st.subheader(f"Динамика: {medida_label.lower()}")
+        largo = df.melt(
+            id_vars=["период", "periodo_inicio"],
+            value_vars=list(medida["columnas"].values()),
             var_name="_col", value_name="valor",
         )
-        col_a_cat_h = {v: k for k, v in columnas_h.items()}
-        largo_horas["categoria"] = largo_horas["_col"].map(col_a_cat_h)
-        orden_h = {"Кофе": 0, "Фраппе": 1, "Остальные напитки": 2}
-        largo_horas["orden"] = largo_horas["categoria"].map(orden_h)
+        col_a_cat = {v: k for k, v in medida["columnas"].items()}
+        largo["categoria"] = largo["_col"].map(col_a_cat)
 
-        grafico_horas = alt.Chart(largo_horas).mark_bar().encode(
-            x=alt.X(
-                "hora:O", title="Час", axis=alt.Axis(labelAngle=0),
-                scale=alt.Scale(domain=list(range(_HORA_DESDE, _HORA_HASTA + 1))),
-            ),
-            y=alt.Y("valor:Q", stack=apilado, title=titulo_h),
+        # "По дням" -- каждая точка это ОТДЕЛЬНЫЙ день, а не период в несколько
+        # недель, как декада/квинсена/месяц -- там "мес. год" достаточно
+        # (соседние точки и так далеко друг от друга по времени), а здесь
+        # с тем же форматом на всех подписях было бы одно и то же "Sep 26" --
+        # число дня (28.09) единственное, что различает соседние точки.
+        _formato_eje_x = "%d.%m" if granularidad == "dia" else "%b %y"
+        grafico = alt.Chart(largo).mark_line(point=True, strokeWidth=2.5).encode(
+            x=alt.X("periodo_inicio:T", title=None,
+                    axis=alt.Axis(labelExpr=f"timeFormat(datum.value, '{_formato_eje_x}')")),
+            y=alt.Y("valor:Q", title=medida["titulo_eje"]),
             color=alt.Color(
                 "categoria:N",
-                scale=alt.Scale(domain=_KAT_HORAS,
-                                 range=[_COLOR_KATEGORII[c] for c in _KAT_HORAS]),
+                scale=alt.Scale(domain=_KATEGORII_NAPITKOV,
+                                 range=[_COLOR_KATEGORII[c] for c in _KATEGORII_NAPITKOV]),
                 legend=alt.Legend(title=None, orient="bottom"),
             ),
-            order=alt.Order("orden:Q"),
+            strokeDash=alt.condition(
+                alt.datum.categoria == "Напитки", alt.value([5, 4]), alt.value([1, 0]),
+            ),
             tooltip=[
-                alt.Tooltip("hora:O", title="Час"),
+                alt.Tooltip("период:N", title="Период"),
                 alt.Tooltip("categoria:N", title="Категория"),
-                alt.Tooltip("valor:Q", title=titulo_h, format=formato_h),
+                alt.Tooltip("valor:Q", title=medida_label, format=medida["formato"]),
             ],
-        ).properties(height=280)
-        st.altair_chart(grafico_horas, width="stretch")
-
-        if medida_label == "Доля, % от продаж":
-            st.caption(
-                "Здесь -- доля от выручки напитков В ЭТОТ КОНКРЕТНЫЙ час (не "
-                "от общих продаж, как на карточках выше). Так видно, что "
-                "состав меняется в течение дня -- например, если доля "
-                "фраппе днём заметно выше, чем в вечерний час пик, значит "
-                "фраппе берут не только потому, что людно, а именно в жару."
-            )
-        else:
-            st.caption(
-                "Столбики показывают, когда за день набегает выручка/штуки "
-                "каждой категории -- не только сколько всего, но и в какие "
-                "часы. Диапазон дат и точка -- из фильтров слева."
-            )
-    else:
-        st.info(
-            "Для этого диапазона нет строк с временем чека (hora_cierre) -- "
-            "почасовой разбор недоступен. Перезагрузи те же файлы Wansoft "
-            "через Start.bat -> пункт 1, это дозаполнит время без дублей."
-        )
-
-    # ---- Погода и напитки -------------------------------------------------------
-    # Не "какая погода была сегодня" (это уже есть в "Анализ дня" на других
-    # страницах, для ОДНОГО дня) -- а как ведут себя дни В ЦЕЛОМ при разной
-    # температуре: среднее по банде, а не отдельная точка. Своя дневная
-    # серия -- нужна ИМЕННО по дням, вне зависимости от выбранной сверху
-    # "Разбивки по периодам" (температура -- дневная величина).
-    st.subheader("Погода и напитки")
-    # serie_por_periodo llama a la fecha "periodo_inicio" (un date, no un
-    # string) en cualquier granularidad -- ventas_por_banda_temperatura
-    # espera "fecha" como string ISO, igual que clima_rango.
-    dias_temp = [
-        {**d, "fecha": d["periodo_inicio"].isoformat()}
-        for d in _cache_serie_por_periodo(
-            engine, "dia", sucursal_filtro, desde.isoformat(), hasta.isoformat(),
-        )
-    ]
-    hasta_clima = min(hasta, tiempo.hoy() - dt.timedelta(days=1))
-    clima_datos = (
-        _cache_clima_rango(desde.isoformat(), hasta_clima.isoformat())
-        if desde <= hasta_clima else []
-    )
-    # Раскрытие по группам -- Кофе/Фраппе/Остальные напитки отдельно, не
-    # только Фраппе: жара может двигать спрос МЕЖДУ категориями (кофе вниз,
-    # что-то холодное вверх), а не только поднимать одну. "Напитки"
-    # (сумма всех трёх) сюда не идёт -- это была бы просто их сумма, тот
-    # же приём, что и в top_platillos_bebidas.
-    _CAT_BANDA = [("Кофе", "cafe_pct"), ("Фраппе", "frappe_pct"), ("Остальные напитки", "otras_bebidas_pct")]
-    filas_banda_cat = []
-    for cat, campo in _CAT_BANDA:
-        for fila in metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, campo) or []:
-            filas_banda_cat.append({**fila, "categoria": cat})
-    banda_ventas = metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, "ventas_totales")
-
-    if not clima_datos:
-        st.info("Не удалось получить архив погоды для этого диапазона (Open-Meteo недоступен).")
-    elif not filas_banda_cat and banda_ventas is None:
-        st.info(
-            "Недостаточно дней в каждой банде температуры для надёжного "
-            "среднего (нужно минимум 3 дня на банду) -- попробуй диапазон "
-            "подлиннее."
-        )
-    else:
-        orden_bandas = [b[0] for b in metrics.BANDAS_TEMPERATURA]
-        orden_cat = [c for c, _ in _CAT_BANDA]
-
-        st.caption("Доля от продаж по категориям, % (среднее по банде температуры)")
-        if filas_banda_cat:
-            grafico_bc = alt.Chart(pd.DataFrame(filas_banda_cat)).mark_bar().encode(
-                x=alt.X("banda:N", title=None, sort=orden_bandas),
-                xOffset=alt.XOffset("categoria:N", sort=orden_cat),
-                y=alt.Y("promedio:Q", title="Доля от продаж, %"),
-                color=alt.Color(
-                    "categoria:N", sort=orden_cat, title=None,
-                    scale=alt.Scale(domain=orden_cat, range=[_COLOR_KATEGORII[c] for c in orden_cat]),
-                    legend=alt.Legend(orient="bottom"),
-                ),
-                tooltip=[
-                    alt.Tooltip("banda:N", title="Температура"),
-                    alt.Tooltip("categoria:N", title="Категория"),
-                    alt.Tooltip("promedio:Q", title="Доля, %", format=".1f"),
-                    alt.Tooltip("n_dias:Q", title="Дней в банде"),
-                ],
-            ).properties(height=300)
-            st.altair_chart(grafico_bc, width="stretch")
-        else:
-            st.caption("Недостаточно дней в каждой банде.")
-
-        st.caption("Выручка всего, $ (среднее по банде)")
-        if banda_ventas:
-            grafico_bv = alt.Chart(pd.DataFrame(banda_ventas)).mark_bar(color=COLOR_TIPICO).encode(
-                x=alt.X("banda:N", title=None, sort=orden_bandas),
-                y=alt.Y("promedio:Q", title="Выручка, $"),
-                tooltip=[
-                    alt.Tooltip("banda:N", title="Температура"),
-                    alt.Tooltip("promedio:Q", title="Выручка, $", format=",.0f"),
-                    alt.Tooltip("n_dias:Q", title="Дней в банде"),
-                ],
-            ).properties(height=240)
-            st.altair_chart(grafico_bv, width="stretch")
-        else:
-            st.caption("Недостаточно дней в каждой банде.")
-
+        ).properties(height=380)
+        st.altair_chart(grafico, width="stretch")
         st.caption(
-            "Среднее по дням с известной максимальной температурой в "
-            "Сан-Луис-Потоси (архив Open-Meteo, за весь выбранный "
-            "диапазон) -- банда показывается, только если в ней хотя бы "
-            "3 дня. Это НАБЛЮДАЕМОЕ совпадение, не доказанная причина -- "
-            "как и в «Анализ дня», погода здесь лишь один из возможных "
-            "факторов, наравне с праздниками, акциями и обычным шумом."
+            "«Напитки» (пунктирная линия) -- это ровно сумма трёх остальных: "
+            "кофе + фраппе + остальные напитки, в любом измерении слева."
         )
 
-    # ---- Что именно продаётся внутри каждой категории ------------------------
-    # Динамика и почасовой разбор выше отвечают "сколько" и "когда", но не
-    # "ЧТО именно" -- если Фраппе выросло на 2 пт, это тянет один новый вкус
-    # или рост равномерный по всему меню? Без этого ответа "выросло" --
-    # наполовину бесполезная новость: непонятно, что закреплять в меню, а
-    # что убирать.
-    st.subheader("Что именно продаётся внутри каждой категории")
-    top_por_categoria = _cache_top_platillos_bebidas(
-        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
-    )
-    columnas_top = st.columns(3)
-    _KAT_TOP = ["Кофе", "Фраппе", "Остальные напитки"]
-    for col, cat in zip(columnas_top, _KAT_TOP):
-        filas_cat = top_por_categoria[cat]
-        with col:
-            st.markdown(f"**{cat}**")
-            if not filas_cat:
-                st.caption("Нет продаж за этот диапазон.")
-                continue
-            df_top = pd.DataFrame(filas_cat)
-            if medida_label == "Штуки, шт":
-                col_valor, formato_top, titulo_top = "unidades", ",.0f", "шт"
-            elif medida_label == "Доля, % от продаж":
-                col_valor, formato_top, titulo_top = "pct_categoria", ".1f", f"% от «{cat}»"
-            else:
-                col_valor, formato_top, titulo_top = "ventas", ",.0f", "$"
-            grafico_top = alt.Chart(df_top).mark_bar(
-                color=_COLOR_KATEGORII[cat], cornerRadiusTopRight=3, cornerRadiusBottomRight=3,
-            ).encode(
-                x=alt.X(f"{col_valor}:Q", title=titulo_top),
-                y=alt.Y("platillo:N", sort="-x", title=None),
-                tooltip=[
-                    alt.Tooltip("platillo:N", title="Позиция"),
-                    alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
-                    alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
-                    alt.Tooltip("pct_categoria:Q", title=f"% от «{cat}»", format=".1f"),
-                ],
-            ).properties(height=26 * len(df_top) + 20)
-            st.altair_chart(grafico_top, width="stretch")
-    st.caption(
-        "Топ-6 позиций меню по выручке внутри каждой категории -- та же "
-        "точка и диапазон дат, что и везде на странице. Помогает увидеть, "
-        "тянет ли рост категории один продукт или он распределён по всему "
-        "меню."
-    )
 
-    # ---- Таблица ---------------------------------------------------------------
-    with st.expander("Таблица (данные графика выше, все измерения сразу)"):
-        st.dataframe(
-            df[["период", "ventas_totales",
-                "bebidas_total", "bebidas_pct", "unidades_bebidas",
-                "cafe_total", "cafe_pct", "cafe_pct_bebidas", "unidades_cafe",
-                "frappe_total", "frappe_pct", "frappe_pct_bebidas", "unidades_frappe",
-                "otras_bebidas_total", "otras_bebidas_pct", "otras_bebidas_pct_bebidas",
-                "unidades_otras_bebidas"]]
-            .rename(columns={
-                "ventas_totales": "Продажи всего, $",
-                "bebidas_total": "Напитки, $", "bebidas_pct": "Напитки, % от продаж",
-                "unidades_bebidas": "Напитки, шт",
-                "cafe_total": "Кофе, $", "cafe_pct": "Кофе, % от продаж",
-                "cafe_pct_bebidas": "Кофе, % от напитков", "unidades_cafe": "Кофе, шт",
-                "frappe_total": "Фраппе, $", "frappe_pct": "Фраппе, % от продаж",
-                "frappe_pct_bebidas": "Фраппе, % от напитков", "unidades_frappe": "Фраппе, шт",
-                "otras_bebidas_total": "Остальные напитки, $",
-                "otras_bebidas_pct": "Остальные напитки, % от продаж",
-                "otras_bebidas_pct_bebidas": "Остальные напитки, % от напитков",
-                "unidades_otras_bebidas": "Остальные напитки, шт",
-            }),
+        # ---- Сезонность: день недели ---------------------------------------
+        # Тот же диапазон дат, что и основной график выше, но по ДНЯМ (даже
+        # если сверху выбрана разбивка по декадам/месяцам -- сезонность по
+        # дню недели теряет смысл на агрегатах длиннее дня). Один короткий
+        # текстовый вывод -- см. просьбу "меньше чисел, больше текстом";
+        # сам индекс по дням -- в графике ниже, для тех, кому нужны цифры.
+        dias_estacionalidad = [
+            {**d, "fecha": d["periodo_inicio"].isoformat()}
+            for d in _cache_serie_por_periodo(
+                engine, "dia", sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+            )
+        ]
+        indices_semana = metrics.estacionalidad_semana(dias_estacionalidad, "ventas_totales")
+        texto_semana = metrics.texto_estacionalidad(indices_semana)
+        if texto_semana:
+            st.subheader("Сезонность: день недели")
+            st.write(f"📅 {texto_semana}")
+            orden_dias = metrics.DIAS_SEMANA_RU
+            grafico_semana = alt.Chart(pd.DataFrame(indices_semana)).mark_bar(
+                color=COLOR_PRIMARIO,
+            ).encode(
+                x=alt.X("dia_semana:N", title=None, sort=orden_dias),
+                y=alt.Y("indice:Q", title="Индекс (100 = средний день)"),
+                tooltip=[
+                    alt.Tooltip("dia_semana:N", title="День"),
+                    alt.Tooltip("indice:Q", title="Индекс", format=".0f"),
+                    alt.Tooltip("n_dias:Q", title="Дней учтено"),
+                ],
+            ).properties(height=220)
+            st.altair_chart(grafico_semana, width="stretch")
+            st.caption(
+                "100 -- средний день за выбранный диапазон; выше/ниже -- "
+                "насколько этот день недели обычно сильнее/слабее среднего. "
+                "Не прогноз на конкретную дату, а обобщение по всему диапазону."
+            )
+
+    with tab_dolya:
+        # ---- Доля против выручки: когда расходятся -------------------------------
+        # Доля -- это ОТНОШЕНИЕ (категория / общие продажи), а не сама выручка,
+        # поэтому она может расти, даже когда сама категория падает в деньгах --
+        # если общие продажи упали ЕЩЁ сильнее (и наоборот: доля может падать
+        # при росте категории, если весь бизнес вырос ещё быстрее). Ни чистая
+        # доля, ни чистая выручка по отдельности (переключатель "Что показывать"
+        # выше) этого расхождения не показывают -- нужно видеть обе метрики сразу.
+        st.subheader("Доля против выручки: когда расходятся")
+        cat_combo = st.radio(
+            "Категория", _KATEGORII_NAPITKOV, index=0, horizontal=True, key="cat_combo",
+        )
+        col_ventas_combo = _MEDIDAS["Выручка, $"]["columnas"][cat_combo]
+        col_pct_combo = _MEDIDAS["Доля, % от продаж"]["columnas"][cat_combo]
+
+        barras_combo = alt.Chart(df).mark_bar(color=_COLOR_KATEGORII[cat_combo], opacity=0.5).encode(
+            x=alt.X("periodo_inicio:T", title=None,
+                    axis=alt.Axis(labelExpr=f"timeFormat(datum.value, '{_formato_eje_x}')")),
+            y=alt.Y(f"{col_ventas_combo}:Q", title="Выручка, $"),
+            tooltip=[
+                alt.Tooltip("период:N", title="Период"),
+                alt.Tooltip(f"{col_ventas_combo}:Q", title="Выручка, $", format=",.0f"),
+            ],
+        )
+        linea_combo = alt.Chart(df).mark_line(point=True, strokeWidth=2.5, color=COLOR_TIPICO).encode(
+            x=alt.X("periodo_inicio:T", title=None),
+            y=alt.Y(f"{col_pct_combo}:Q", title="Доля от продаж, %"),
+            tooltip=[
+                alt.Tooltip("период:N", title="Период"),
+                alt.Tooltip(f"{col_pct_combo}:Q", title="Доля, %", format=".1f"),
+            ],
+        )
+        st.altair_chart(
+            alt.layer(barras_combo, linea_combo).resolve_scale(y="independent").properties(height=320),
             width="stretch",
         )
+        st.caption(
+            f"Столбики -- выручка «{cat_combo}» в деньгах (левая ось). Линия -- "
+            f"доля «{cat_combo}» от ВСЕХ продаж (правая ось, %). Если столбики "
+            f"идут вниз, а линия вверх (или наоборот) -- доля и выручка разошлись."
+        )
 
-    st.caption(
-        "Источник: Wansoft 'Reporte Detalle De Ventas'. Список слов для "
-        "распознавания кофе -- на странице «Настройки» слева. Фраппе "
-        "определяется по группе меню FRAPPES, а не по ключевым словам."
-    )
+        # Автоматический разбор расхождения -- сравнение тех же трёх темпов
+        # (категория / доля / общие продажи), что уже посчитаны выше для карточек
+        # KPI, только теперь явно проговорено словами, если знаки разошлись.
+        # Молчит, если доля и выручка двигались в одну сторону -- говорить не о
+        # чем, это не расхождение.
+        if dinero_prev is not None and dinero_prev[cat_combo] and pct_prev is not None and ventas_prev:
+            cambio_pct_cat = 100 * (dinero[cat_combo] - dinero_prev[cat_combo]) / dinero_prev[cat_combo]
+            cambio_pt_doля = pct_de_ventas[cat_combo] - pct_prev[cat_combo]
+            cambio_pct_total = 100 * (ventas_total - ventas_prev) / ventas_prev
+            # Расхождение -- если оба сдвига заметны (не шум около нуля) и в
+            # РАЗНЫЕ стороны. Пороги те же по духу, что metrics._UMBRAL_DESVIACION_PCT
+            # -- маленькие колебания не стоит подавать как значимое расхождение.
+            _UMBRAL_PT_DOLYA, _UMBRAL_PCT_CAT = 0.3, 1.0
+            if (abs(cambio_pt_doля) >= _UMBRAL_PT_DOLYA and abs(cambio_pct_cat) >= _UMBRAL_PCT_CAT
+                    and (cambio_pt_doля > 0) != (cambio_pct_cat > 0)):
+                if cambio_pt_doля > 0:
+                    st.warning(
+                        f"⚠️ Доля «{cat_combo}» выросла на {cambio_pt_doля:+.1f} пт, а выручка "
+                        f"«{cat_combo}» при этом упала на {cambio_pct_cat:.1f}% -- дело не в росте "
+                        f"«{cat_combo}», а в том, что ОБЩИЕ продажи упали ещё сильнее "
+                        f"({cambio_pct_total:+.1f}%)."
+                    )
+                else:
+                    st.warning(
+                        f"⚠️ Доля «{cat_combo}» упала на {cambio_pt_doля:.1f} пт, хотя выручка "
+                        f"«{cat_combo}» выросла на {cambio_pct_cat:+.1f}% -- «{cat_combo}» не "
+                        f"проседает, просто ОБЩИЕ продажи выросли ещё быстрее "
+                        f"({cambio_pct_total:+.1f}%)."
+                    )
 
-    # ---- Сравнение точек по кофе ---------------------------------------------
-    # Единственный блок на странице, который НЕ подчиняется фильтру "Точка"
-    # слева -- специально: остальная страница акотает до одной точки (или
-    # суммирует все), а здесь наоборот нужно видеть точки РЯДОМ, чтобы
-    # сравнить их между собой. Внизу страницы -- это сравнение читают
-    # реже и после того, как посмотрели общую картину выше.
-    if len(sucursales) > 1:
-        st.subheader("Кофе по точкам")
-        cafe_suc = _cache_cafe_por_sucursal(engine, desde.isoformat(), hasta.isoformat())
-        if cafe_suc:
-            df_suc = pd.DataFrame(cafe_suc)
-            grafico_suc = alt.Chart(df_suc).mark_bar().encode(
-                x=alt.X("cafe_pct_ventas:Q", title="Доля кофе в продажах точки, %"),
-                y=alt.Y("sucursal:N", title=None, sort="-x"),
-                color=alt.value(_COLOR_KATEGORII["Кофе"]),
+
+    with tab_horas:
+        # ---- Когда именно продаются напитки: по часам дня -----------------------
+        # Отвечает не на "сколько", а на "в какое время" -- та же идея, что
+        # температура в присланном примере (жара -> тянет на холодное), только
+        # без внешних данных: час чека уже есть в базе. Три категории, не
+        # четыре -- "Напитки" здесь не нужна отдельной линией, это и так вся
+        # высота столбика (кофе+фраппе+остальные).
+        patron_horas = _cache_patron_horario_bebidas(
+            engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+        )
+        if any(h["cafe_total"] or h["frappe_total"] or h["otras_bebidas_total"] for h in patron_horas):
+            st.subheader("Когда продаются напитки, по часам дня")
+            df_horas = pd.DataFrame(patron_horas)
+            # Часы вне работы точек (ночь) всегда пустые -- обрезаем их, чтобы
+            # график не тянулся от 0 до 23, а показывал только рабочий день.
+            _HORA_DESDE, _HORA_HASTA = 6, 22
+            df_horas = df_horas[
+                (df_horas["hora"] >= _HORA_DESDE) & (df_horas["hora"] <= _HORA_HASTA)
+            ]
+
+            _KAT_HORAS = ["Кофе", "Фраппе", "Остальные напитки"]
+            _COL_HORAS_PCT = {"Кофе": "cafe_total", "Фраппе": "frappe_total",
+                               "Остальные напитки": "otras_bebidas_total"}
+            if medida_label == "Штуки, шт":
+                columnas_h = {"Кофе": "unidades_cafe", "Фраппе": "unidades_frappe",
+                              "Остальные напитки": "unidades_otras_bebidas"}
+                apilado, titulo_h, formato_h = "zero", "шт", ",.0f"
+            elif medida_label == "Выручка, $":
+                columnas_h = _COL_HORAS_PCT
+                apilado, titulo_h, formato_h = "zero", "$", ",.0f"
+            else:
+                # "Доля, % от продаж" здесь считается иначе, чем на карточках
+                # выше (там -- % от ВСЕХ продаж точки): по часам честнее
+                # показать % от напитков ИМЕННО ЭТОГО часа -- так видно, как
+                # МЕНЯЕТСЯ состав в течение дня, а не только когда людно.
+                # stack="normalize" в Altair сам считает эту долю из сырых $.
+                columnas_h = _COL_HORAS_PCT
+                apilado, titulo_h, formato_h = "normalize", "% от напитков этого часа", ".1f"
+
+            largo_horas = df_horas.melt(
+                id_vars=["hora"], value_vars=list(columnas_h.values()),
+                var_name="_col", value_name="valor",
+            )
+            col_a_cat_h = {v: k for k, v in columnas_h.items()}
+            largo_horas["categoria"] = largo_horas["_col"].map(col_a_cat_h)
+            orden_h = {"Кофе": 0, "Фраппе": 1, "Остальные напитки": 2}
+            largo_horas["orden"] = largo_horas["categoria"].map(orden_h)
+
+            grafico_horas = alt.Chart(largo_horas).mark_bar().encode(
+                x=alt.X(
+                    "hora:O", title="Час", axis=alt.Axis(labelAngle=0),
+                    scale=alt.Scale(domain=list(range(_HORA_DESDE, _HORA_HASTA + 1))),
+                ),
+                y=alt.Y("valor:Q", stack=apilado, title=titulo_h),
+                color=alt.Color(
+                    "categoria:N",
+                    scale=alt.Scale(domain=_KAT_HORAS,
+                                     range=[_COLOR_KATEGORII[c] for c in _KAT_HORAS]),
+                    legend=alt.Legend(title=None, orient="bottom"),
+                ),
+                order=alt.Order("orden:Q"),
                 tooltip=[
-                    alt.Tooltip("sucursal:N", title="Точка"),
-                    alt.Tooltip("cafe_pct_ventas:Q", title="Доля кофе, %", format=".1f"),
-                    alt.Tooltip("cafe_total:Q", title="Выручка кофе, $", format=",.0f"),
-                    alt.Tooltip("unidades_cafe:Q", title="Кофе, шт", format=",.0f"),
-                    alt.Tooltip("ventas_totales:Q", title="Продажи точки всего, $", format=",.0f"),
+                    alt.Tooltip("hora:O", title="Час"),
+                    alt.Tooltip("categoria:N", title="Категория"),
+                    alt.Tooltip("valor:Q", title=titulo_h, format=formato_h),
                 ],
-            ).properties(height=32 * len(df_suc) + 40)
-            st.altair_chart(grafico_suc, width="stretch")
+            ).properties(height=280)
+            st.altair_chart(grafico_horas, width="stretch")
 
+            if medida_label == "Доля, % от продаж":
+                st.caption(
+                    "Здесь -- доля от выручки напитков В ЭТОТ КОНКРЕТНЫЙ час (не "
+                    "от общих продаж, как на карточках выше). Так видно, что "
+                    "состав меняется в течение дня -- например, если доля "
+                    "фраппе днём заметно выше, чем в вечерний час пик, значит "
+                    "фраппе берут не только потому, что людно, а именно в жару."
+                )
+            else:
+                st.caption(
+                    "Столбики показывают, когда за день набегает выручка/штуки "
+                    "каждой категории -- не только сколько всего, но и в какие "
+                    "часы. Диапазон дат и точка -- из фильтров слева."
+                )
+        else:
+            st.info(
+                "Для этого диапазона нет строк с временем чека (hora_cierre) -- "
+                "почасовой разбор недоступен. Перезагрузи те же файлы Wansoft "
+                "через Start.bat -> пункт 1, это дозаполнит время без дублей."
+            )
+
+        # ---- Погода и напитки -------------------------------------------------------
+        # Не "какая погода была сегодня" (это уже есть в "Анализ дня" на других
+        # страницах, для ОДНОГО дня) -- а как ведут себя дни В ЦЕЛОМ при разной
+        # температуре: среднее по банде, а не отдельная точка. Своя дневная
+        # серия -- нужна ИМЕННО по дням, вне зависимости от выбранной сверху
+        # "Разбивки по периодам" (температура -- дневная величина).
+        st.subheader("Погода и напитки")
+        # serie_por_periodo llama a la fecha "periodo_inicio" (un date, no un
+        # string) en cualquier granularidad -- ventas_por_banda_temperatura
+        # espera "fecha" como string ISO, igual que clima_rango.
+        dias_temp = [
+            {**d, "fecha": d["periodo_inicio"].isoformat()}
+            for d in _cache_serie_por_periodo(
+                engine, "dia", sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+            )
+        ]
+        hasta_clima = min(hasta, tiempo.hoy() - dt.timedelta(days=1))
+        clima_datos = (
+            _cache_clima_rango(desde.isoformat(), hasta_clima.isoformat())
+            if desde <= hasta_clima else []
+        )
+        # Раскрытие по группам -- Кофе/Фраппе/Остальные напитки отдельно, не
+        # только Фраппе: жара может двигать спрос МЕЖДУ категориями (кофе вниз,
+        # что-то холодное вверх), а не только поднимать одну. "Напитки"
+        # (сумма всех трёх) сюда не идёт -- это была бы просто их сумма, тот
+        # же приём, что и в top_platillos_bebidas.
+        _CAT_BANDA = [("Кофе", "cafe_pct"), ("Фраппе", "frappe_pct"), ("Остальные напитки", "otras_bebidas_pct")]
+        filas_banda_cat = []
+        for cat, campo in _CAT_BANDA:
+            for fila in metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, campo) or []:
+                filas_banda_cat.append({**fila, "categoria": cat})
+        banda_ventas = metrics.ventas_por_banda_temperatura(dias_temp, clima_datos, "ventas_totales")
+
+        if not clima_datos:
+            st.info("Не удалось получить архив погоды для этого диапазона (Open-Meteo недоступен).")
+        elif not filas_banda_cat and banda_ventas is None:
+            st.info(
+                "Недостаточно дней в каждой банде температуры для надёжного "
+                "среднего (нужно минимум 3 дня на банду) -- попробуй диапазон "
+                "подлиннее."
+            )
+        else:
+            orden_bandas = [b[0] for b in metrics.BANDAS_TEMPERATURA]
+            orden_cat = [c for c, _ in _CAT_BANDA]
+
+            st.caption("Доля от продаж по категориям, % (среднее по банде температуры)")
+            if filas_banda_cat:
+                grafico_bc = alt.Chart(pd.DataFrame(filas_banda_cat)).mark_bar().encode(
+                    x=alt.X("banda:N", title=None, sort=orden_bandas),
+                    xOffset=alt.XOffset("categoria:N", sort=orden_cat),
+                    y=alt.Y("promedio:Q", title="Доля от продаж, %"),
+                    color=alt.Color(
+                        "categoria:N", sort=orden_cat, title=None,
+                        scale=alt.Scale(domain=orden_cat, range=[_COLOR_KATEGORII[c] for c in orden_cat]),
+                        legend=alt.Legend(orient="bottom"),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("banda:N", title="Температура"),
+                        alt.Tooltip("categoria:N", title="Категория"),
+                        alt.Tooltip("promedio:Q", title="Доля, %", format=".1f"),
+                        alt.Tooltip("n_dias:Q", title="Дней в банде"),
+                    ],
+                ).properties(height=300)
+                st.altair_chart(grafico_bc, width="stretch")
+            else:
+                st.caption("Недостаточно дней в каждой банде.")
+
+            st.caption("Выручка всего, $ (среднее по банде)")
+            if banda_ventas:
+                grafico_bv = alt.Chart(pd.DataFrame(banda_ventas)).mark_bar(color=COLOR_TIPICO).encode(
+                    x=alt.X("banda:N", title=None, sort=orden_bandas),
+                    y=alt.Y("promedio:Q", title="Выручка, $"),
+                    tooltip=[
+                        alt.Tooltip("banda:N", title="Температура"),
+                        alt.Tooltip("promedio:Q", title="Выручка, $", format=",.0f"),
+                        alt.Tooltip("n_dias:Q", title="Дней в банде"),
+                    ],
+                ).properties(height=240)
+                st.altair_chart(grafico_bv, width="stretch")
+            else:
+                st.caption("Недостаточно дней в каждой банде.")
+
+            st.caption(
+                "Среднее по дням с известной максимальной температурой в "
+                "Сан-Луис-Потоси (архив Open-Meteo, за весь выбранный "
+                "диапазон) -- банда показывается, только если в ней хотя бы "
+                "3 дня. Это НАБЛЮДАЕМОЕ совпадение, не доказанная причина -- "
+                "как и в «Анализ дня», погода здесь лишь один из возможных "
+                "факторов, наравне с праздниками, акциями и обычным шумом."
+            )
+
+
+    with tab_menu:
+        # ---- Что именно продаётся внутри каждой категории ------------------------
+        # Динамика и почасовой разбор выше отвечают "сколько" и "когда", но не
+        # "ЧТО именно" -- если Фраппе выросло на 2 пт, это тянет один новый вкус
+        # или рост равномерный по всему меню? Без этого ответа "выросло" --
+        # наполовину бесполезная новость: непонятно, что закреплять в меню, а
+        # что убирать.
+        st.subheader("Что именно продаётся внутри каждой категории")
+        top_por_categoria = _cache_top_platillos_bebidas(
+            engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+        )
+        columnas_top = st.columns(3)
+        _KAT_TOP = ["Кофе", "Фраппе", "Остальные напитки"]
+        for col, cat in zip(columnas_top, _KAT_TOP):
+            filas_cat = top_por_categoria[cat]
+            with col:
+                st.markdown(f"**{cat}**")
+                if not filas_cat:
+                    st.caption("Нет продаж за этот диапазон.")
+                    continue
+                df_top = pd.DataFrame(filas_cat)
+                if medida_label == "Штуки, шт":
+                    col_valor, formato_top, titulo_top = "unidades", ",.0f", "шт"
+                elif medida_label == "Доля, % от продаж":
+                    col_valor, formato_top, titulo_top = "pct_categoria", ".1f", f"% от «{cat}»"
+                else:
+                    col_valor, formato_top, titulo_top = "ventas", ",.0f", "$"
+                grafico_top = alt.Chart(df_top).mark_bar(
+                    color=_COLOR_KATEGORII[cat], cornerRadiusTopRight=3, cornerRadiusBottomRight=3,
+                ).encode(
+                    x=alt.X(f"{col_valor}:Q", title=titulo_top),
+                    y=alt.Y("platillo:N", sort="-x", title=None),
+                    tooltip=[
+                        alt.Tooltip("platillo:N", title="Позиция"),
+                        alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+                        alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+                        alt.Tooltip("pct_categoria:Q", title=f"% от «{cat}»", format=".1f"),
+                    ],
+                ).properties(height=26 * len(df_top) + 20)
+                st.altair_chart(grafico_top, width="stretch")
+        st.caption(
+            "Топ-6 позиций меню по выручке внутри каждой категории -- та же "
+            "точка и диапазон дат, что и везде на странице. Помогает увидеть, "
+            "тянет ли рост категории один продукт или он распределён по всему "
+            "меню."
+        )
+
+        # ---- Таблица ---------------------------------------------------------------
+        with st.expander("Таблица (данные графика выше, все измерения сразу)"):
             st.dataframe(
-                df_suc.rename(columns={
-                    "sucursal": "Точка",
-                    "cafe_pct_ventas": "Доля кофе, %",
-                    "cafe_total": "Выручка кофе, $",
-                    "unidades_cafe": "Кофе, шт",
-                    "ventas_totales": "Продажи точки всего, $",
+                df[["период", "ventas_totales",
+                    "bebidas_total", "bebidas_pct", "unidades_bebidas",
+                    "cafe_total", "cafe_pct", "cafe_pct_bebidas", "unidades_cafe",
+                    "frappe_total", "frappe_pct", "frappe_pct_bebidas", "unidades_frappe",
+                    "otras_bebidas_total", "otras_bebidas_pct", "otras_bebidas_pct_bebidas",
+                    "unidades_otras_bebidas"]]
+                .rename(columns={
+                    "ventas_totales": "Продажи всего, $",
+                    "bebidas_total": "Напитки, $", "bebidas_pct": "Напитки, % от продаж",
+                    "unidades_bebidas": "Напитки, шт",
+                    "cafe_total": "Кофе, $", "cafe_pct": "Кофе, % от продаж",
+                    "cafe_pct_bebidas": "Кофе, % от напитков", "unidades_cafe": "Кофе, шт",
+                    "frappe_total": "Фраппе, $", "frappe_pct": "Фраппе, % от продаж",
+                    "frappe_pct_bebidas": "Фраппе, % от напитков", "unidades_frappe": "Фраппе, шт",
+                    "otras_bebidas_total": "Остальные напитки, $",
+                    "otras_bebidas_pct": "Остальные напитки, % от продаж",
+                    "otras_bebidas_pct_bebidas": "Остальные напитки, % от напитков",
+                    "unidades_otras_bebidas": "Остальные напитки, шт",
+                }),
+                width="stretch",
+            )
+
+        st.caption(
+            "Источник: Wansoft 'Reporte Detalle De Ventas'. Список слов для "
+            "распознавания кофе -- на странице «Настройки» слева. Фраппе "
+            "определяется по группе меню FRAPPES, а не по ключевым словам."
+        )
+
+
+    with tab_puntos:
+        # ---- Точки бок о бок ------------------------------------------------
+        # Единственная вкладка, которая НЕ подчиняется фильтру "Точка" слева
+        # -- специально: остальная страница смотрит на одну точку (или
+        # сумму всех), а здесь наоборот нужно видеть точки РЯДОМ. Раньше
+        # здесь сравнивался только кофе -- теперь вся продажа: выручка,
+        # чек, штуки, состав меню и рост, одной таблицей.
+        if len(sucursales) <= 1:
+            st.info("Сравнение точек появится, когда в базе будет больше одной точки.")
+        else:
+            st.subheader("Продажи, чек и состав меню")
+            comparacion_puntos = metrics.comparacion_puntos_periodo(
+                engine, sucursales, desde.isoformat(), hasta.isoformat(),
+            )
+            df_cmp = pd.DataFrame(comparacion_puntos)
+            st.dataframe(
+                df_cmp.rename(columns={
+                    "sucursal": "Точка", "ventas_totales": "Выручка, $",
+                    "num_ordenes": "Чеков", "cheque_promedio": "Ср. чек, $",
+                    "unidades_totales": "Штук", "crecimiento_pct": "Рост к прошлому периоду, %",
+                    "panaderia_pct": "Panadería, %", "pasteleria_pct": "Pastelería, %",
+                    "cafe_pct": "Café, %", "otras_pct": "Остальное, %",
                 }),
                 width="stretch", hide_index=True,
                 column_config={
-                    "Доля кофе, %": st.column_config.NumberColumn(format="%.1f%%"),
-                    "Выручка кофе, $": st.column_config.NumberColumn(format="%.0f $"),
-                    "Кофе, шт": st.column_config.NumberColumn(format="%.0f"),
-                    "Продажи точки всего, $": st.column_config.NumberColumn(format="%.0f $"),
+                    "Выручка, $": st.column_config.NumberColumn(format="%.0f $"),
+                    "Ср. чек, $": st.column_config.NumberColumn(format="%.0f $"),
+                    "Рост к прошлому периоду, %": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "Panadería, %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Pastelería, %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Café, %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Остальное, %": st.column_config.NumberColumn(format="%.1f%%"),
                 },
             )
-
-            fila_pct_max = df_suc.loc[df_suc["cafe_pct_ventas"].idxmax()]
-            fila_pct_min = df_suc.loc[df_suc["cafe_pct_ventas"].idxmin()]
-            fila_unid_max = df_suc.loc[df_suc["unidades_cafe"].idxmax()]
-            fila_unid_min = df_suc.loc[df_suc["unidades_cafe"].idxmin()]
-
-            partes = []
-            if fila_pct_max["sucursal"] != fila_pct_min["sucursal"]:
-                partes.append(
-                    f"по доле кофе в продажах {fila_pct_max['sucursal']} впереди на "
-                    f"{fila_pct_max['cafe_pct_ventas'] - fila_pct_min['cafe_pct_ventas']:.1f} пт "
-                    f"({fila_pct_max['cafe_pct_ventas']:.1f}% против "
-                    f"{fila_pct_min['cafe_pct_ventas']:.1f}%)"
-                )
-            if fila_unid_max["sucursal"] != fila_unid_min["sucursal"]:
-                partes.append(
-                    f"по штукам {fila_unid_max['sucursal']} продал на "
-                    f"{fila_unid_max['unidades_cafe'] - fila_unid_min['unidades_cafe']:,.0f} шт "
-                    f"больше кофе, чем {fila_unid_min['sucursal']}"
-                )
-            if partes:
-                st.caption("Итоговая разница: " + "; ".join(partes) + ".")
-
             st.caption(
-                "Доля кофе -- от ВСЕХ продаж точки (не только напитков), чтобы "
-                "сравнение не зависело от размера точки в деньгах. Диапазон "
-                "дат -- из фильтра слева, но сама точка -- нет: здесь всегда "
-                "все точки сразу, вне зависимости от выбора «Точка» выше."
+                "«Рост» -- к периоду такой же длины непосредственно перед "
+                "выбранным диапазоном дат (то же правило, что и стрелки на "
+                "карточках выше). Доли категорий -- от продаж ЭТОЙ точки, "
+                "не от продаж всей сети. Диапазон дат -- из фильтра слева, "
+                "но сама точка -- нет: здесь всегда все точки сразу."
             )
+
+            st.subheader("Кофе по точкам")
+            cafe_suc = _cache_cafe_por_sucursal(engine, desde.isoformat(), hasta.isoformat())
+            if cafe_suc:
+                df_suc = pd.DataFrame(cafe_suc)
+                grafico_suc = alt.Chart(df_suc).mark_bar().encode(
+                    x=alt.X("cafe_pct_ventas:Q", title="Доля кофе в продажах точки, %"),
+                    y=alt.Y("sucursal:N", title=None, sort="-x"),
+                    color=alt.value(_COLOR_KATEGORII["Кофе"]),
+                    tooltip=[
+                        alt.Tooltip("sucursal:N", title="Точка"),
+                        alt.Tooltip("cafe_pct_ventas:Q", title="Доля кофе, %", format=".1f"),
+                        alt.Tooltip("cafe_total:Q", title="Выручка кофе, $", format=",.0f"),
+                        alt.Tooltip("unidades_cafe:Q", title="Кофе, шт", format=",.0f"),
+                        alt.Tooltip("ventas_totales:Q", title="Продажи точки всего, $", format=",.0f"),
+                    ],
+                ).properties(height=32 * len(df_suc) + 40)
+                st.altair_chart(grafico_suc, width="stretch")
+
+                fila_pct_max = df_suc.loc[df_suc["cafe_pct_ventas"].idxmax()]
+                fila_pct_min = df_suc.loc[df_suc["cafe_pct_ventas"].idxmin()]
+                fila_unid_max = df_suc.loc[df_suc["unidades_cafe"].idxmax()]
+                fila_unid_min = df_suc.loc[df_suc["unidades_cafe"].idxmin()]
+
+                partes = []
+                if fila_pct_max["sucursal"] != fila_pct_min["sucursal"]:
+                    partes.append(
+                        f"по доле кофе в продажах {fila_pct_max['sucursal']} впереди на "
+                        f"{fila_pct_max['cafe_pct_ventas'] - fila_pct_min['cafe_pct_ventas']:.1f} пт "
+                        f"({fila_pct_max['cafe_pct_ventas']:.1f}% против "
+                        f"{fila_pct_min['cafe_pct_ventas']:.1f}%)"
+                    )
+                if fila_unid_max["sucursal"] != fila_unid_min["sucursal"]:
+                    partes.append(
+                        f"по штукам {fila_unid_max['sucursal']} продал на "
+                        f"{fila_unid_max['unidades_cafe'] - fila_unid_min['unidades_cafe']:,.0f} шт "
+                        f"больше кофе, чем {fila_unid_min['sucursal']}"
+                    )
+                if partes:
+                    st.caption("Итоговая разница: " + "; ".join(partes) + ".")
+
 
 
 # =============================================================================
@@ -2298,550 +2407,562 @@ def page_planificacion():
     # en vez de una celda vacía. Forzar float64 corrige eso.
     df["unidades_plan"] = pd.to_numeric(df["fecha"].map(plan_por_fecha), errors="coerce")
 
-    # ---- График: три ряда -----------------------------------------------
-    st.subheader("Реальные продажи, прогноз и план")
-    _NOMBRES_SERIE = {
-        "real_unidades": "Факт",
-        "pronostico_unidades": "Прогноз",
-        "unidades_plan": "План",
-    }
-    largo = df.melt(
-        id_vars=["fecha"], value_vars=list(_NOMBRES_SERIE),
-        var_name="_col", value_name="valor",
-    ).dropna(subset=["valor"])
-    largo["serie"] = largo["_col"].map(_NOMBRES_SERIE)
+    tab_plan, tab_personal, tab_precision, tab_fisico = st.tabs([
+        "📊 План vs факт", "👥 Персонал",
+        "🎯 Точность прогноза", "📄 Физический план",
+    ])
 
-    grafico = alt.Chart(largo).mark_line(
-        interpolate="linear", point=alt.OverlayMarkDef(opacity=0.6, size=50),
-    ).encode(
-        x=alt.X("fecha:T", title="Дата"),
-        y=alt.Y("valor:Q", title="Штук"),
-        color=alt.Color(
-            "serie:N",
-            scale=alt.Scale(domain=["Факт", "Прогноз", "План"],
-                             range=[COLOR_PRIMARIO, COLOR_TIPICO, COLOR_SECUNDARIO]),
-            legend=alt.Legend(title=None, orient="bottom"),
-        ),
-        strokeDash=alt.StrokeDash(
-            "serie:N",
-            scale=alt.Scale(domain=["Факт", "Прогноз", "План"],
-                             range=[[1, 0], [5, 4], [2, 2]]),
-            legend=None,
-        ),
-        strokeWidth=alt.condition(alt.datum.serie == "Факт", alt.value(3), alt.value(2)),
-        tooltip=[
-            alt.Tooltip("fecha:T", title="Дата"),
-            alt.Tooltip("serie:N", title="Ряд"),
-            alt.Tooltip("valor:Q", title="Штук", format=",.0f"),
-        ],
-    ).properties(height=340)
-    st.altair_chart(grafico, width="stretch")
-
-    st.caption(
-        "Прогноз -- взвешенное среднее по тем же дням недели за всю "
-        "историю (недавние недели весят больше, резкие всплески/провалы "
-        "сглажены -- тот же метод, что на «Продажи по часам»). Для будущих "
-        "дней реальных продаж ещё нет -- видны только прогноз и план."
-    )
-
-    # ---- Таблица с вводом плана -------------------------------------------
-    st.subheader("План производства -- ввод вручную")
-    st.caption(
-        "Впиши штуки на нужный день в столбец «План, шт» и нажми «Сохранить "
-        "план». Пустая ячейка значит «плана ещё нет», а не «план -- ноль»."
-    )
-    df_editor = df[["fecha", "real_unidades", "pronostico_unidades", "unidades_plan"]].rename(
-        columns={
-            "fecha": "Дата", "real_unidades": "Факт, шт",
-            "pronostico_unidades": "Прогноз, шт", "unidades_plan": "План, шт",
+    with tab_plan:
+        # ---- График: три ряда -----------------------------------------------
+        st.subheader("Реальные продажи, прогноз и план")
+        _NOMBRES_SERIE = {
+            "real_unidades": "Факт",
+            "pronostico_unidades": "Прогноз",
+            "unidades_plan": "План",
         }
-    )
-    edited = st.data_editor(
-        df_editor,
-        width="stretch", hide_index=True, key="plan_editor",
-        disabled=["Дата", "Факт, шт", "Прогноз, шт"],
-        column_config={
-            "План, шт": st.column_config.NumberColumn(min_value=0, step=1),
-        },
-    )
-
-    if st.button("💾 Сохранить план", type="primary"):
-        filas = [
-            {"fecha": row["Дата"], "unidades_plan": row["План, шт"]}
-            for _, row in edited.iterrows()
-        ]
-        set_plan_produccion(engine, filas)
-        st.cache_data.clear()
-        st.success("План сохранён.")
-        st.rerun()
-
-    # ---- План-задание на день -- скачать -----------------------------------
-    st.subheader("План-задание на день -- скачать")
-    if sucursal_filtro is None:
-        st.info(
-            "Выбери конкретную точку в фильтрах слева -- план-задание "
-            "составляется для ОДНОЙ точки (там своя кухня и своё "
-            "производство), а не для «Все точки» сразу."
-        )
-    else:
-        st.caption(
-            "Готовое задание на смену: сколько штук печь всего, по часам и "
-            "по позициям меню -- каждое число округлено ВВЕРХ до кратного "
-            "6 (партия/лоток выпечки, а не поштучно -- лучше немного "
-            "лишнего, чем недопечь целый лоток). Разбивка по часам и "
-            "позициям -- из фактического распределения за 90 дней ДО "
-            "выбранной даты; итог за день -- из ручного плана (см. таблицу "
-            "выше), а если его нет -- из прогноза."
-        )
-        fecha_tarea = st.date_input(
-            "На какое число план-задание", value=hoy + dt.timedelta(days=1),
-            min_value=fecha_min, key="plan_tarea_fecha",
-        )
-        tarea = _cache_plan_tarea_dia(engine, fecha_tarea.isoformat(), sucursal_filtro, 10, 6)
-        if tarea["total_dia"] is None:
-            st.info("Для этой даты нет ни плана, ни прогноза -- задание составить не из чего.")
-        else:
-            st.write(
-                f"Итого на {fecha_tarea.isoformat()}: **{tarea['total_dia_redondeado']} шт** "
-                f"(кратно 6; источник -- {tarea['fuente_total']}; до округления -- "
-                f"{tarea['total_dia']:.0f} шт)."
-            )
-            excel_bytes = _excel_plan_tarea(tarea, opcion_sucursal)
-            st.download_button(
-                "⬇️ Скачать план-задание (.xlsx)",
-                data=excel_bytes,
-                file_name=f"plan_tarea_{opcion_sucursal}_{fecha_tarea.isoformat()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-    # ---- Разбивка по позициям ---------------------------------------------
-    # Штуки, не выручка -- для персонала важно, сколько ШТУК нужно
-    # сделать, а не сколько это стоит: конка и круассан с начинкой весят
-    # разное время на изготовление даже при одинаковой выручке.
-    st.subheader("Разбивка по позициям (топ-10 по штукам)")
-    top_items = _cache_top_platillos_panaderia(
-        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(), 10,
-    )
-    df_top = pd.DataFrame(top_items)
-    if df_top.empty:
-        st.info("За этот диапазон дат нет данных по Panadería.")
-    else:
-        grafico_top = alt.Chart(df_top).mark_bar().encode(
-            x=alt.X("unidades:Q", title="Штук"),
-            y=alt.Y("platillo:N", title=None, sort="-x"),
-            color=alt.value(COLOR_PRIMARIO),
-            tooltip=[
-                alt.Tooltip("platillo:N", title="Позиция"),
-                alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
-                alt.Tooltip("pct_unidades:Q", title="Доля от штук Panadería, %", format=".1f"),
-                alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
-            ],
-        ).properties(height=32 * len(df_top) + 40)
-        st.altair_chart(grafico_top, width="stretch")
-        st.caption(
-            "Топ-10 позиций Panadería по штукам за выбранный диапазон дат и "
-            "точку. Разные позиции требуют разного времени на "
-            "изготовление -- это тоже влияет на нужное количество людей, "
-            "не только общая сумма штук."
-        )
-
-    # ---- Штуки по часам -----------------------------------------------------
-    st.subheader("Продажи по часам")
-    patron_horas = _cache_patron_horario_panaderia(
-        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
-    )
-    df_horas = pd.DataFrame(patron_horas)
-    df_horas = df_horas[df_horas["unidades"] > 0]
-    if df_horas.empty:
-        st.info(
-            "Для этого диапазона нет строк с временем чека (hora_cierre) -- "
-            "почасовой разбор недоступен."
-        )
-    else:
-        grafico_horas = alt.Chart(df_horas).mark_bar().encode(
-            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("unidades:Q", title="Штук"),
-            color=alt.value(COLOR_SECUNDARIO),
-            tooltip=[
-                alt.Tooltip("hora:O", title="Час"),
-                alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
-                alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
-            ],
-        ).properties(height=280)
-        st.altair_chart(grafico_horas, width="stretch")
-        st.caption(
-            "Сумма штук Panadería по часу закрытия чека за ВЕСЬ выбранный "
-            "диапазон дат (не один день) -- показывает, в какие часы "
-            "нужно больше людей на кассе/выкладке, отдельно от того, "
-            "сколько продаётся за день целиком."
-        )
-
-    # ---- Штук на человека в час (загрузка производства) --------------------
-    # Те же данные, что и в плитке "Пиковая загрузка" наверху страницы --
-    # здесь подробный разбор по всем часам, там -- одно самое важное число.
-    st.subheader("Штук на человека в час")
-    df_carga = df_carga_top
-    if df_carga.empty:
-        st.info("Для этого диапазона нет данных, чтобы посчитать нагрузку на человека.")
-    else:
-        grafico_carga = alt.Chart(df_carga).mark_bar().encode(
-            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("unidades_por_persona:Q", title="Штук на человека"),
-            color=alt.value(COLOR_PRIMARIO),
-            tooltip=[
-                alt.Tooltip("hora:O", title="Час"),
-                alt.Tooltip("unidades_por_persona:Q", title="Штук на человека", format=".1f"),
-                alt.Tooltip("unidades:Q", title="Всего штук в этот час", format=",.0f"),
-            ],
-        ).properties(height=280)
-        st.altair_chart(grafico_carga, width="stretch")
-
-        dias_norm = dias_dom = 0
-        d = desde
-        while d <= hasta:
-            if d.weekday() == 6:
-                dias_dom += 1
-            else:
-                dias_norm += 1
-            d += dt.timedelta(days=1)
-        personal_total = dias_norm * metrics.PERSONAL_ENTRE_SEMANA + dias_dom * metrics.PERSONAL_DOMINGO
-        st.caption(
-            f"Персонал считается фиксированным (пока нет графика смен в "
-            f"базе): {metrics.PERSONAL_ENTRE_SEMANA} чел. в будни и "
-            f"субботу, {metrics.PERSONAL_DOMINGO} чел. по воскресеньям, "
-            f"одинаково на все часы дня. За выбранный период это "
-            f"{dias_norm} будне-субботних + {dias_dom} воскресных дней = "
-            f"{personal_total} человеко-дней. Столбик -- сколько штук в "
-            f"среднем пришлось на одного человека в этот час за весь "
-            f"период. Если реальная численность изменится -- поправь "
-            f"PERSONAL_ENTRE_SEMANA / PERSONAL_DOMINGO в metrics.py."
-        )
-
-    # ---- Карта загруженности (день недели × час) ----------------------------
-    # В отличие от остальной страницы (только Panadería), здесь -- ВЕСЬ
-    # чек целиком: решение по персоналу на кассе/зале в целом, не только
-    # по производству выпечки.
-    st.subheader("Карта загруженности (день недели × час)")
-    st.caption(
-        "Все категории меню (не только Panadería) -- для решений по "
-        "персоналу в целом, за выбранный диапазон дат слева."
-    )
-    heatmap_datos = _cache_patron_semana_por_hora(
-        engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
-    )
-    df_heatmap = pd.DataFrame(heatmap_datos)
-    df_heatmap = df_heatmap[df_heatmap["ventas"] > 0]
-    if df_heatmap.empty:
-        st.info("Для этого диапазона нет строк с временем чека (hora_cierre).")
-    else:
-        grafico_heatmap = alt.Chart(df_heatmap).mark_rect().encode(
-            x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("dia_semana:N", title=None, sort=metrics.DIAS_SEMANA_RU),
-            color=alt.Color("ventas:Q", title="Выручка, $", scale=alt.Scale(scheme="oranges")),
-            tooltip=[
-                alt.Tooltip("dia_semana:N", title="День"),
-                alt.Tooltip("hora:O", title="Час"),
-                alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
-                alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
-            ],
-        ).properties(height=280)
-        st.altair_chart(grafico_heatmap, width="stretch")
-        st.caption(
-            "Сумма выручки по (день недели, час) за весь выбранный "
-            "диапазон дат -- где сейчас гуще всего, а где почти пусто, "
-            "одним взглядом на всю неделю."
-        )
-
-    # ---- Почему прогноз расходится с фактом ----------------------------------
-    # Арифметика, не рассказ про причины бизнеса (см. docstring
-    # analizar_desviacion_produccion) -- тренд (все дни сместились
-    # одинаково) отличим от единичного дня (один день тянет среднее).
-    st.subheader("Почему прогноз расходится с фактом")
-    dias_para_analisis = df.astype(object).where(df.notna(), None).to_dict("records")
-    analisis = metrics.analizar_desviacion_produccion(dias_para_analisis, "pronostico_unidades")
-    if analisis is None:
-        st.info("Пока недостаточно закрытых дней с прогнозом, чтобы сравнить.")
-    else:
-        direccion = "выше" if analisis["desviacion_pct"] > 0 else "ниже"
-        st.write(
-            f"За {analisis['n_dias']} закрытых дней реальные продажи "
-            f"({analisis['total_real']:,.0f} шт) оказались на "
-            f"{abs(analisis['desviacion_pct']):.1f}% {direccion} прогноза "
-            f"({analisis['total_comparado']:,.0f} шт)."
-        )
-        if abs(analisis["tendencia_pct"]) >= 10:
-            rost_padenie = "выросли" if analisis["tendencia_pct"] > 0 else "упали"
-            st.write(
-                f"Основная причина -- тренд: во второй половине диапазона "
-                f"продажи {rost_padenie} в среднем на "
-                f"{abs(analisis['tendencia_pct']):.1f}% по сравнению с "
-                f"первой половиной. Прогноз строится по недавним неделям, "
-                f"но смотрит назад -- при таком темпе он систематически "
-                f"отстаёт (или опережает)."
-            )
-        else:
-            st.write(
-                f"Тренд по диапазону небольшой -- расхождение не общее, а "
-                f"сконцентрировано в отдельных днях. Сильнее всего "
-                f"разошлось {analisis['peor_dia']}: факт "
-                f"{analisis['peor_dia_real']:,.0f} шт против прогноза "
-                f"{analisis['peor_dia_comparado']:,.0f} шт."
-            )
-            festivo_txt = _texto_festivo(analisis.get("festivo_peor_dia"))
-            if festivo_txt:
-                st.write(festivo_txt)
-            clima_txt_planificacion = _texto_clima(_cache_clima_dia(analisis["peor_dia"]))
-            if clima_txt_planificacion:
-                st.write(clima_txt_planificacion)
-
-        analisis_plan = metrics.analizar_desviacion_produccion(dias_para_analisis, "unidades_plan")
-        if analisis_plan is not None:
-            direccion_plan = "выше" if analisis_plan["desviacion_pct"] > 0 else "ниже"
-            st.write(
-                f"Относительно ВРУЧНУЮ введённого плана: факт на "
-                f"{abs(analisis_plan['desviacion_pct']):.1f}% {direccion_plan} "
-                f"плана ({analisis_plan['total_comparado']:,.0f} шт)."
-            )
-
-        st.caption(
-            "Это разбор тех же цифр, что и на графике выше -- статистика "
-            "(тренд/единичный день) плюс проверка по календарю мексиканских "
-            "праздников и по погоде в Сан-Луис-Потоси (см. выше, если "
-            "совпало); другие причины -- акция, локальное событие -- в "
-            "данных не видны."
-        )
-
-    # ---- Точность прогноза во времени ----------------------------------------
-    # Раздел выше суммирует ВЕСЬ диапазон разом. Здесь -- день за днём:
-    # не съезжает ли сам прогноз со временем (например, если продажи
-    # разгоняются быстрее, чем модель успевает подстроиться).
-    st.subheader("Точность прогноза во времени")
-    precision = metrics.precision_pronostico(dias_para_analisis)
-    if precision is None:
-        st.info("Пока недостаточно закрытых дней с прогнозом, чтобы посчитать точность.")
-    else:
-        col_mape, col_ant, col_rec = st.columns(3)
-        col_mape.metric("Средняя ошибка (MAPE)", f"{precision['mape']:.1f}%")
-        col_ant.metric("1-я половина периода", f"{precision['mape_anterior']:.1f}%")
-        col_rec.metric("2-я половина периода", f"{precision['mape_reciente']:.1f}%")
-        if precision["mape_reciente"] > precision["mape_anterior"] * 1.2:
-            st.write(
-                "⚠️ В последнее время прогноз ошибается заметно больше, чем "
-                "раньше -- возможно, продажи меняются быстрее, чем модель "
-                "успевает подстроиться (см. «тренд» в разделе выше)."
-            )
-        df_precision = pd.DataFrame(precision["serie"])
-        grafico_precision = alt.Chart(df_precision).mark_bar().encode(
-            x=alt.X("fecha:T", title="Дата"),
-            y=alt.Y("error_pct:Q", title="Ошибка прогноза, %"),
-            color=alt.condition(
-                alt.datum.error_pct >= 0, alt.value(COLOR_SECUNDARIO), alt.value(COLOR_PRIMARIO),
-            ),
-            tooltip=[
-                alt.Tooltip("fecha:T", title="Дата"),
-                alt.Tooltip("real:Q", title="Факт, шт", format=",.0f"),
-                alt.Tooltip("pronostico:Q", title="Прогноз, шт", format=",.0f"),
-                alt.Tooltip("error_pct:Q", title="Ошибка, %", format="+.1f"),
-            ],
-        ).properties(height=220)
-        st.altair_chart(grafico_precision, width="stretch")
-        st.caption(
-            "MAPE -- средняя абсолютная ошибка прогноза в процентах "
-            "(стандартная метрика точности прогноза, не придумана для "
-            "этого бизнеса). Столбики выше нуля -- продали больше "
-            "прогноза, ниже -- меньше; большая ошибка сама по себе -- не "
-            "всегда плохо, если она в основном со знаком «плюс» (бизнес "
-            "растёт быстрее модели) -- смотри вместе с разделом выше."
-        )
-
-    # ---- Физический план vs факт (бумажный план, только El Molino Ruso) -----
-    # Не ручной план из таблицы выше (тот -- только Panadería, вводится в
-    # самом дашборде) -- а РЕАЛЬНЫЙ план на бумаге, который на кухне уже
-    # ведут каждый день (фото/PDF из data/planes_produccion/<точка>/,
-    # подхватывается само -- см. extractors/plan_fisico.py и
-    # auto_carga.procesar_planes, тот же принцип, что и для файлов
-    # продаж). Panadería + Pastelería вместе (так и планируют на бумаге),
-    # без "Bolsa*" (упаковка). Существует только для точки "El Molino
-    # Ruso" -- там, где физически ведут этот план.
-    st.subheader("Физический план vs факт (бумажный план, El Molino Ruso)")
-    if sucursal_filtro != "El Molino Ruso":
-        st.info(
-            "Эти данные есть только для точки «El Molino Ruso» -- выбери "
-            "её в фильтре «Точка» слева, чтобы увидеть сравнение."
-        )
-    else:
-        lista_fechas_plan = _cache_fechas_plan_fisico(engine, sucursal_filtro)
-        if not lista_fechas_plan:
-            st.info(
-                "Пока нет ни одной фотографии бумажного плана для этой "
-                "точки -- положи PDF в data/planes_produccion/El Molino "
-                "Ruso/, и через 15 секунд (пока работает сторож) данные "
-                "появятся здесь сами."
-            )
-            st.stop()
-        st.caption(
-            f"Период {lista_fechas_plan[0]} — {lista_fechas_plan[-1]} "
-            f"-- по фотографиям бумажного плана за эти даты (не связан с "
-            f"«Диапазон дат» слева -- других дат просто нет, план "
-            f"физически не сфотографирован)."
-        )
-
-        # Самое прямое доказательство того, что кухня НЕ ограничена бумагой:
-        # доля реального объёма, проданного под позициями, которых в плане
-        # нет ВООБЩЕ (не "меньше, чем планировали" -- НОЛЬ в плане). Если бы
-        # производство жёстко шло по листу, этих продаж просто не могло бы
-        # быть -- взять товар неоткуда.
-        datos_prod = _cache_comparar_plan_fisico_por_producto(engine, sucursal_filtro)
-        if datos_prod["suma_real_total"]:
-            st.metric(
-                "Продано вне плана (позиций нет в бумаге вообще)",
-                f"{datos_prod['pct_solo_en_real']:.0f}%",
-                help=(
-                    f"{datos_prod['suma_solo_en_real']:,.0f} шт из "
-                    f"{datos_prod['suma_real_total']:,.0f} шт реальных продаж "
-                    f"за период пришлось на позиции, которых нет ни в одной "
-                    f"фотографии бумажного плана -- это не \"перевыполнили "
-                    f"план\", это товар, который на бумаге не существует. "
-                    f"Прямое свидетельство, что производство не ограничено "
-                    f"этим листом, а решается на месте."
-                ),
-            )
-
-        comparacion_dia = _cache_comparar_plan_fisico(engine, sucursal_filtro)
-        df_plan_fisico = pd.DataFrame(comparacion_dia)
-
-        # Свой прогноз (взвешенное среднее по тому же дню недели, см.
-        # panaderia_real_y_pronostico) -- ТЕМИ ЖЕ категориями, что и
-        # физический план (Panadería + Pastelería вместе), иначе прогноз
-        # был бы не про то же самое, что сравниваем.
-        pronostico_dias = _cache_pronostico_panaderia_pasteleria(
-            engine, lista_fechas_plan[0], lista_fechas_plan[-1], sucursal_filtro,
-        )
-        pronostico_por_fecha = {d["fecha"]: d["pronostico_unidades"] for d in pronostico_dias}
-        df_plan_fisico["pronostico"] = df_plan_fisico["fecha"].map(pronostico_por_fecha)
-
-        largo_pf = df_plan_fisico.melt(
-            id_vars=["fecha"], value_vars=["plan", "real", "pronostico"],
-            var_name="serie", value_name="valor",
+        largo = df.melt(
+            id_vars=["fecha"], value_vars=list(_NOMBRES_SERIE),
+            var_name="_col", value_name="valor",
         ).dropna(subset=["valor"])
-        largo_pf["serie"] = largo_pf["serie"].map(
-            {"plan": "План (бумага)", "real": "Факт", "pronostico": "Прогноз"},
-        )
-        orden_series_pf = ["Факт", "Прогноз", "План (бумага)"]
-        grafico_pf = alt.Chart(largo_pf).mark_line(point=True, strokeWidth=2.5).encode(
-            x=alt.X("fecha:T", title=None),
-            y=alt.Y("valor:Q", title="Штук (Panadería + Pastelería)"),
+        largo["serie"] = largo["_col"].map(_NOMBRES_SERIE)
+
+        grafico = alt.Chart(largo).mark_line(
+            interpolate="linear", point=alt.OverlayMarkDef(opacity=0.6, size=50),
+        ).encode(
+            x=alt.X("fecha:T", title="Дата"),
+            y=alt.Y("valor:Q", title="Штук"),
             color=alt.Color(
-                "serie:N", title=None, sort=orden_series_pf,
-                scale=alt.Scale(domain=orden_series_pf,
+                "serie:N",
+                scale=alt.Scale(domain=["Факт", "Прогноз", "План"],
                                  range=[COLOR_PRIMARIO, COLOR_TIPICO, COLOR_SECUNDARIO]),
-                legend=alt.Legend(orient="bottom"),
+                legend=alt.Legend(title=None, orient="bottom"),
             ),
             strokeDash=alt.StrokeDash(
-                "serie:N", sort=orden_series_pf,
-                scale=alt.Scale(domain=orden_series_pf, range=[[1, 0], [5, 4], [2, 2]]),
+                "serie:N",
+                scale=alt.Scale(domain=["Факт", "Прогноз", "План"],
+                                 range=[[1, 0], [5, 4], [2, 2]]),
                 legend=None,
             ),
+            strokeWidth=alt.condition(alt.datum.serie == "Факт", alt.value(3), alt.value(2)),
             tooltip=[
                 alt.Tooltip("fecha:T", title="Дата"),
                 alt.Tooltip("serie:N", title="Ряд"),
                 alt.Tooltip("valor:Q", title="Штук", format=",.0f"),
             ],
-        ).properties(height=300)
-        st.altair_chart(grafico_pf, width="stretch")
+        ).properties(height=340)
+        st.altair_chart(grafico, width="stretch")
 
-        con_ambos = [d for d in comparacion_dia if d["real"] is not None]
-        if con_ambos:
-            suma_plan = sum(d["plan"] for d in con_ambos)
-            suma_real = sum(d["real"] for d in con_ambos)
-            delta_total = 100 * (suma_real - suma_plan) / suma_plan if suma_plan else 0.0
-            texto_resumen = (
-                f"За {len(con_ambos)} дней: по бумажному плану должно "
-                f"было выйти {suma_plan:,.0f} шт, реально продано "
-                f"{suma_real:,.0f} шт ({delta_total:+.1f}%)."
-            )
-            suma_pronostico = sum(
-                pronostico_por_fecha[d["fecha"]] for d in con_ambos
-                if pronostico_por_fecha.get(d["fecha"]) is not None
-            )
-            if suma_pronostico:
-                delta_pron = 100 * (suma_real - suma_pronostico) / suma_pronostico
-                texto_resumen += (
-                    f" Свой прогноз по истории ожидал {suma_pronostico:,.0f} шт "
-                    f"({delta_pron:+.1f}% от факта)."
-                )
-            st.write(texto_resumen)
         st.caption(
-            "«План» здесь -- не тот же ручной план, что в таблице выше "
-            "(тот -- только Panadería, задаётся отдельно в "
-            "самом дашборде); это то, что реально было написано на "
-            "бумаге на этот день."
+            "Прогноз -- взвешенное среднее по тем же дням недели за всю "
+            "историю (недавние недели весят больше, резкие всплески/провалы "
+            "сглажены -- тот же метод, что на «Продажи по часам»). Для будущих "
+            "дней реальных продаж ещё нет -- видны только прогноз и план."
         )
 
-        # ---- По позициям меню -------------------------------------------------
-        # datos_prod уже посчитан выше (для метрики "Продано вне плана").
-        st.subheader("По позициям: где план разошёлся с фактом больше всего")
-        col_sobre, col_sub = st.columns(2)
-        with col_sobre:
-            st.write("📉 **Планируют больше, чем продают**")
-            if datos_prod["sobreproducidos"]:
-                st.dataframe(
-                    pd.DataFrame(datos_prod["sobreproducidos"]).rename(columns={
-                        "platillo": "Позиция", "plan": "План, шт",
-                        "real": "Факт, шт", "diff": "План − факт",
-                    }),
-                    width="stretch", hide_index=True,
-                )
-        with col_sub:
-            st.write("📈 **Продают больше, чем планируют**")
-            if datos_prod["subproducidos"]:
-                st.dataframe(
-                    pd.DataFrame(datos_prod["subproducidos"]).rename(columns={
-                        "platillo": "Позиция", "plan": "План, шт",
-                        "real": "Факт, шт", "diff": "План − факт",
-                    }),
-                    width="stretch", hide_index=True,
-                )
+        # ---- Таблица с вводом плана -------------------------------------------
+        st.subheader("План производства -- ввод вручную")
         st.caption(
-            f"Сумма за весь период ({len(lista_fechas_plan)} "
-            f"дней). Из {datos_prod['n_emparejados']} позиций, которые "
-            f"есть и в бумажном плане, и в реальных продажах."
+            "Впиши штуки на нужный день в столбец «План, шт» и нажми «Сохранить "
+            "план». Пустая ячейка значит «плана ещё нет», а не «план -- ноль»."
+        )
+        df_editor = df[["fecha", "real_unidades", "pronostico_unidades", "unidades_plan"]].rename(
+            columns={
+                "fecha": "Дата", "real_unidades": "Факт, шт",
+                "pronostico_unidades": "Прогноз, шт", "unidades_plan": "План, шт",
+            }
+        )
+        edited = st.data_editor(
+            df_editor,
+            width="stretch", hide_index=True, key="plan_editor",
+            disabled=["Дата", "Факт, шт", "Прогноз, шт"],
+            column_config={
+                "План, шт": st.column_config.NumberColumn(min_value=0, step=1),
+            },
         )
 
-        if datos_prod["solo_en_plan"] or datos_prod["solo_en_real"]:
-            with st.expander("Позиции, которые не удалось сопоставить"):
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.write("Есть в плане, не найдено в продажах")
-                    if datos_prod["solo_en_plan"]:
-                        st.dataframe(
-                            pd.DataFrame(datos_prod["solo_en_plan"]).rename(
-                                columns={"platillo": "Позиция", "plan": "План, шт"},
-                            ),
-                            width="stretch", hide_index=True,
-                        )
-                with col_b:
-                    st.write("Есть в продажах, не найдено в плане")
-                    if datos_prod["solo_en_real"]:
-                        st.dataframe(
-                            pd.DataFrame(datos_prod["solo_en_real"]).rename(
-                                columns={"platillo": "Позиция", "real": "Факт, шт"},
-                            ),
-                            width="stretch", hide_index=True,
-                        )
-                st.caption(
-                    "Не значит «не производилось» или «не продавалось» -- "
-                    "иногда это просто другое написание названия в кассе "
-                    "или в бумажном плане, которое не удалось сопоставить "
-                    "автоматически."
+        if st.button("💾 Сохранить план", type="primary"):
+            filas = [
+                {"fecha": row["Дата"], "unidades_plan": row["План, шт"]}
+                for _, row in edited.iterrows()
+            ]
+            set_plan_produccion(engine, filas)
+            st.cache_data.clear()
+            st.success("План сохранён.")
+            st.rerun()
+
+        # ---- План-задание на день -- скачать -----------------------------------
+        st.subheader("План-задание на день -- скачать")
+        if sucursal_filtro is None:
+            st.info(
+                "Выбери конкретную точку в фильтрах слева -- план-задание "
+                "составляется для ОДНОЙ точки (там своя кухня и своё "
+                "производство), а не для «Все точки» сразу."
+            )
+        else:
+            st.caption(
+                "Готовое задание на смену: сколько штук печь всего, по часам и "
+                "по позициям меню -- каждое число округлено ВВЕРХ до кратного "
+                "6 (партия/лоток выпечки, а не поштучно -- лучше немного "
+                "лишнего, чем недопечь целый лоток). Разбивка по часам и "
+                "позициям -- из фактического распределения за 90 дней ДО "
+                "выбранной даты; итог за день -- из ручного плана (см. таблицу "
+                "выше), а если его нет -- из прогноза."
+            )
+            fecha_tarea = st.date_input(
+                "На какое число план-задание", value=hoy + dt.timedelta(days=1),
+                min_value=fecha_min, key="plan_tarea_fecha",
+            )
+            tarea = _cache_plan_tarea_dia(engine, fecha_tarea.isoformat(), sucursal_filtro, 10, 6)
+            if tarea["total_dia"] is None:
+                st.info("Для этой даты нет ни плана, ни прогноза -- задание составить не из чего.")
+            else:
+                st.write(
+                    f"Итого на {fecha_tarea.isoformat()}: **{tarea['total_dia_redondeado']} шт** "
+                    f"(кратно 6; источник -- {tarea['fuente_total']}; до округления -- "
+                    f"{tarea['total_dia']:.0f} шт)."
                 )
+                excel_bytes = _excel_plan_tarea(tarea, opcion_sucursal)
+                st.download_button(
+                    "⬇️ Скачать план-задание (.xlsx)",
+                    data=excel_bytes,
+                    file_name=f"plan_tarea_{opcion_sucursal}_{fecha_tarea.isoformat()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+
+    with tab_personal:
+        # ---- Разбивка по позициям ---------------------------------------------
+        # Штуки, не выручка -- для персонала важно, сколько ШТУК нужно
+        # сделать, а не сколько это стоит: конка и круассан с начинкой весят
+        # разное время на изготовление даже при одинаковой выручке.
+        st.subheader("Разбивка по позициям (топ-10 по штукам)")
+        top_items = _cache_top_platillos_panaderia(
+            engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(), 10,
+        )
+        df_top = pd.DataFrame(top_items)
+        if df_top.empty:
+            st.info("За этот диапазон дат нет данных по Panadería.")
+        else:
+            grafico_top = alt.Chart(df_top).mark_bar().encode(
+                x=alt.X("unidades:Q", title="Штук"),
+                y=alt.Y("platillo:N", title=None, sort="-x"),
+                color=alt.value(COLOR_PRIMARIO),
+                tooltip=[
+                    alt.Tooltip("platillo:N", title="Позиция"),
+                    alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+                    alt.Tooltip("pct_unidades:Q", title="Доля от штук Panadería, %", format=".1f"),
+                    alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+                ],
+            ).properties(height=32 * len(df_top) + 40)
+            st.altair_chart(grafico_top, width="stretch")
+            st.caption(
+                "Топ-10 позиций Panadería по штукам за выбранный диапазон дат и "
+                "точку. Разные позиции требуют разного времени на "
+                "изготовление -- это тоже влияет на нужное количество людей, "
+                "не только общая сумма штук."
+            )
+
+        # ---- Штуки по часам -----------------------------------------------------
+        st.subheader("Продажи по часам")
+        patron_horas = _cache_patron_horario_panaderia(
+            engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+        )
+        df_horas = pd.DataFrame(patron_horas)
+        df_horas = df_horas[df_horas["unidades"] > 0]
+        if df_horas.empty:
+            st.info(
+                "Для этого диапазона нет строк с временем чека (hora_cierre) -- "
+                "почасовой разбор недоступен."
+            )
+        else:
+            grafico_horas = alt.Chart(df_horas).mark_bar().encode(
+                x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("unidades:Q", title="Штук"),
+                color=alt.value(COLOR_SECUNDARIO),
+                tooltip=[
+                    alt.Tooltip("hora:O", title="Час"),
+                    alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+                    alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+                ],
+            ).properties(height=280)
+            st.altair_chart(grafico_horas, width="stretch")
+            st.caption(
+                "Сумма штук Panadería по часу закрытия чека за ВЕСЬ выбранный "
+                "диапазон дат (не один день) -- показывает, в какие часы "
+                "нужно больше людей на кассе/выкладке, отдельно от того, "
+                "сколько продаётся за день целиком."
+            )
+
+        # ---- Штук на человека в час (загрузка производства) --------------------
+        # Те же данные, что и в плитке "Пиковая загрузка" наверху страницы --
+        # здесь подробный разбор по всем часам, там -- одно самое важное число.
+        st.subheader("Штук на человека в час")
+        df_carga = df_carga_top
+        if df_carga.empty:
+            st.info("Для этого диапазона нет данных, чтобы посчитать нагрузку на человека.")
+        else:
+            grafico_carga = alt.Chart(df_carga).mark_bar().encode(
+                x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("unidades_por_persona:Q", title="Штук на человека"),
+                color=alt.value(COLOR_PRIMARIO),
+                tooltip=[
+                    alt.Tooltip("hora:O", title="Час"),
+                    alt.Tooltip("unidades_por_persona:Q", title="Штук на человека", format=".1f"),
+                    alt.Tooltip("unidades:Q", title="Всего штук в этот час", format=",.0f"),
+                ],
+            ).properties(height=280)
+            st.altair_chart(grafico_carga, width="stretch")
+
+            dias_norm = dias_dom = 0
+            d = desde
+            while d <= hasta:
+                if d.weekday() == 6:
+                    dias_dom += 1
+                else:
+                    dias_norm += 1
+                d += dt.timedelta(days=1)
+            personal_total = dias_norm * metrics.PERSONAL_ENTRE_SEMANA + dias_dom * metrics.PERSONAL_DOMINGO
+            st.caption(
+                f"Персонал считается фиксированным (пока нет графика смен в "
+                f"базе): {metrics.PERSONAL_ENTRE_SEMANA} чел. в будни и "
+                f"субботу, {metrics.PERSONAL_DOMINGO} чел. по воскресеньям, "
+                f"одинаково на все часы дня. За выбранный период это "
+                f"{dias_norm} будне-субботних + {dias_dom} воскресных дней = "
+                f"{personal_total} человеко-дней. Столбик -- сколько штук в "
+                f"среднем пришлось на одного человека в этот час за весь "
+                f"период. Если реальная численность изменится -- поправь "
+                f"PERSONAL_ENTRE_SEMANA / PERSONAL_DOMINGO в metrics.py."
+            )
+
+        # ---- Карта загруженности (день недели × час) ----------------------------
+        # В отличие от остальной страницы (только Panadería), здесь -- ВЕСЬ
+        # чек целиком: решение по персоналу на кассе/зале в целом, не только
+        # по производству выпечки.
+        st.subheader("Карта загруженности (день недели × час)")
+        st.caption(
+            "Все категории меню (не только Panadería) -- для решений по "
+            "персоналу в целом, за выбранный диапазон дат слева."
+        )
+        heatmap_datos = _cache_patron_semana_por_hora(
+            engine, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
+        )
+        df_heatmap = pd.DataFrame(heatmap_datos)
+        df_heatmap = df_heatmap[df_heatmap["ventas"] > 0]
+        if df_heatmap.empty:
+            st.info("Для этого диапазона нет строк с временем чека (hora_cierre).")
+        else:
+            grafico_heatmap = alt.Chart(df_heatmap).mark_rect().encode(
+                x=alt.X("hora:O", title="Час", axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("dia_semana:N", title=None, sort=metrics.DIAS_SEMANA_RU),
+                color=alt.Color("ventas:Q", title="Выручка, $", scale=alt.Scale(scheme="oranges")),
+                tooltip=[
+                    alt.Tooltip("dia_semana:N", title="День"),
+                    alt.Tooltip("hora:O", title="Час"),
+                    alt.Tooltip("ventas:Q", title="Выручка, $", format=",.0f"),
+                    alt.Tooltip("unidades:Q", title="Штук", format=",.0f"),
+                ],
+            ).properties(height=280)
+            st.altair_chart(grafico_heatmap, width="stretch")
+            st.caption(
+                "Сумма выручки по (день недели, час) за весь выбранный "
+                "диапазон дат -- где сейчас гуще всего, а где почти пусто, "
+                "одним взглядом на всю неделю."
+            )
+
+
+    with tab_precision:
+        # ---- Почему прогноз расходится с фактом ----------------------------------
+        # Арифметика, не рассказ про причины бизнеса (см. docstring
+        # analizar_desviacion_produccion) -- тренд (все дни сместились
+        # одинаково) отличим от единичного дня (один день тянет среднее).
+        st.subheader("Почему прогноз расходится с фактом")
+        dias_para_analisis = df.astype(object).where(df.notna(), None).to_dict("records")
+        analisis = metrics.analizar_desviacion_produccion(dias_para_analisis, "pronostico_unidades")
+        if analisis is None:
+            st.info("Пока недостаточно закрытых дней с прогнозом, чтобы сравнить.")
+        else:
+            direccion = "выше" if analisis["desviacion_pct"] > 0 else "ниже"
+            st.write(
+                f"За {analisis['n_dias']} закрытых дней реальные продажи "
+                f"({analisis['total_real']:,.0f} шт) оказались на "
+                f"{abs(analisis['desviacion_pct']):.1f}% {direccion} прогноза "
+                f"({analisis['total_comparado']:,.0f} шт)."
+            )
+            if abs(analisis["tendencia_pct"]) >= 10:
+                rost_padenie = "выросли" if analisis["tendencia_pct"] > 0 else "упали"
+                st.write(
+                    f"Основная причина -- тренд: во второй половине диапазона "
+                    f"продажи {rost_padenie} в среднем на "
+                    f"{abs(analisis['tendencia_pct']):.1f}% по сравнению с "
+                    f"первой половиной. Прогноз строится по недавним неделям, "
+                    f"но смотрит назад -- при таком темпе он систематически "
+                    f"отстаёт (или опережает)."
+                )
+            else:
+                st.write(
+                    f"Тренд по диапазону небольшой -- расхождение не общее, а "
+                    f"сконцентрировано в отдельных днях. Сильнее всего "
+                    f"разошлось {analisis['peor_dia']}: факт "
+                    f"{analisis['peor_dia_real']:,.0f} шт против прогноза "
+                    f"{analisis['peor_dia_comparado']:,.0f} шт."
+                )
+                festivo_txt = _texto_festivo(analisis.get("festivo_peor_dia"))
+                if festivo_txt:
+                    st.write(festivo_txt)
+                clima_txt_planificacion = _texto_clima(_cache_clima_dia(analisis["peor_dia"]))
+                if clima_txt_planificacion:
+                    st.write(clima_txt_planificacion)
+
+            analisis_plan = metrics.analizar_desviacion_produccion(dias_para_analisis, "unidades_plan")
+            if analisis_plan is not None:
+                direccion_plan = "выше" if analisis_plan["desviacion_pct"] > 0 else "ниже"
+                st.write(
+                    f"Относительно ВРУЧНУЮ введённого плана: факт на "
+                    f"{abs(analisis_plan['desviacion_pct']):.1f}% {direccion_plan} "
+                    f"плана ({analisis_plan['total_comparado']:,.0f} шт)."
+                )
+
+            st.caption(
+                "Это разбор тех же цифр, что и на графике выше -- статистика "
+                "(тренд/единичный день) плюс проверка по календарю мексиканских "
+                "праздников и по погоде в Сан-Луис-Потоси (см. выше, если "
+                "совпало); другие причины -- акция, локальное событие -- в "
+                "данных не видны."
+            )
+
+        # ---- Точность прогноза во времени ----------------------------------------
+        # Раздел выше суммирует ВЕСЬ диапазон разом. Здесь -- день за днём:
+        # не съезжает ли сам прогноз со временем (например, если продажи
+        # разгоняются быстрее, чем модель успевает подстроиться).
+        st.subheader("Точность прогноза во времени")
+        precision = metrics.precision_pronostico(dias_para_analisis)
+        if precision is None:
+            st.info("Пока недостаточно закрытых дней с прогнозом, чтобы посчитать точность.")
+        else:
+            col_mape, col_ant, col_rec = st.columns(3)
+            col_mape.metric("Средняя ошибка (MAPE)", f"{precision['mape']:.1f}%")
+            col_ant.metric("1-я половина периода", f"{precision['mape_anterior']:.1f}%")
+            col_rec.metric("2-я половина периода", f"{precision['mape_reciente']:.1f}%")
+            if precision["mape_reciente"] > precision["mape_anterior"] * 1.2:
+                st.write(
+                    "⚠️ В последнее время прогноз ошибается заметно больше, чем "
+                    "раньше -- возможно, продажи меняются быстрее, чем модель "
+                    "успевает подстроиться (см. «тренд» в разделе выше)."
+                )
+            df_precision = pd.DataFrame(precision["serie"])
+            grafico_precision = alt.Chart(df_precision).mark_bar().encode(
+                x=alt.X("fecha:T", title="Дата"),
+                y=alt.Y("error_pct:Q", title="Ошибка прогноза, %"),
+                color=alt.condition(
+                    alt.datum.error_pct >= 0, alt.value(COLOR_SECUNDARIO), alt.value(COLOR_PRIMARIO),
+                ),
+                tooltip=[
+                    alt.Tooltip("fecha:T", title="Дата"),
+                    alt.Tooltip("real:Q", title="Факт, шт", format=",.0f"),
+                    alt.Tooltip("pronostico:Q", title="Прогноз, шт", format=",.0f"),
+                    alt.Tooltip("error_pct:Q", title="Ошибка, %", format="+.1f"),
+                ],
+            ).properties(height=220)
+            st.altair_chart(grafico_precision, width="stretch")
+            st.caption(
+                "MAPE -- средняя абсолютная ошибка прогноза в процентах "
+                "(стандартная метрика точности прогноза, не придумана для "
+                "этого бизнеса). Столбики выше нуля -- продали больше "
+                "прогноза, ниже -- меньше; большая ошибка сама по себе -- не "
+                "всегда плохо, если она в основном со знаком «плюс» (бизнес "
+                "растёт быстрее модели) -- смотри вместе с разделом выше."
+            )
+
+
+    with tab_fisico:
+        # ---- Физический план vs факт (бумажный план, только El Molino Ruso) -----
+        # Не ручной план из таблицы выше (тот -- только Panadería, вводится в
+        # самом дашборде) -- а РЕАЛЬНЫЙ план на бумаге, который на кухне уже
+        # ведут каждый день (фото/PDF из data/planes_produccion/<точка>/,
+        # подхватывается само -- см. extractors/plan_fisico.py и
+        # auto_carga.procesar_planes, тот же принцип, что и для файлов
+        # продаж). Panadería + Pastelería вместе (так и планируют на бумаге),
+        # без "Bolsa*" (упаковка). Существует только для точки "El Molino
+        # Ruso" -- там, где физически ведут этот план.
+        st.subheader("Физический план vs факт (бумажный план, El Molino Ruso)")
+        if sucursal_filtro != "El Molino Ruso":
+            st.info(
+                "Эти данные есть только для точки «El Molino Ruso» -- выбери "
+                "её в фильтре «Точка» слева, чтобы увидеть сравнение."
+            )
+        else:
+            lista_fechas_plan = _cache_fechas_plan_fisico(engine, sucursal_filtro)
+            if not lista_fechas_plan:
+                st.info(
+                    "Пока нет ни одной фотографии бумажного плана для этой "
+                    "точки -- положи PDF в data/planes_produccion/El Molino "
+                    "Ruso/, и через 15 секунд (пока работает сторож) данные "
+                    "появятся здесь сами."
+                )
+                st.stop()
+            st.caption(
+                f"Период {lista_fechas_plan[0]} — {lista_fechas_plan[-1]} "
+                f"-- по фотографиям бумажного плана за эти даты (не связан с "
+                f"«Диапазон дат» слева -- других дат просто нет, план "
+                f"физически не сфотографирован)."
+            )
+
+            # Самое прямое доказательство того, что кухня НЕ ограничена бумагой:
+            # доля реального объёма, проданного под позициями, которых в плане
+            # нет ВООБЩЕ (не "меньше, чем планировали" -- НОЛЬ в плане). Если бы
+            # производство жёстко шло по листу, этих продаж просто не могло бы
+            # быть -- взять товар неоткуда.
+            datos_prod = _cache_comparar_plan_fisico_por_producto(engine, sucursal_filtro)
+            if datos_prod["suma_real_total"]:
+                st.metric(
+                    "Продано вне плана (позиций нет в бумаге вообще)",
+                    f"{datos_prod['pct_solo_en_real']:.0f}%",
+                    help=(
+                        f"{datos_prod['suma_solo_en_real']:,.0f} шт из "
+                        f"{datos_prod['suma_real_total']:,.0f} шт реальных продаж "
+                        f"за период пришлось на позиции, которых нет ни в одной "
+                        f"фотографии бумажного плана -- это не \"перевыполнили "
+                        f"план\", это товар, который на бумаге не существует. "
+                        f"Прямое свидетельство, что производство не ограничено "
+                        f"этим листом, а решается на месте."
+                    ),
+                )
+
+            comparacion_dia = _cache_comparar_plan_fisico(engine, sucursal_filtro)
+            df_plan_fisico = pd.DataFrame(comparacion_dia)
+
+            # Свой прогноз (взвешенное среднее по тому же дню недели, см.
+            # panaderia_real_y_pronostico) -- ТЕМИ ЖЕ категориями, что и
+            # физический план (Panadería + Pastelería вместе), иначе прогноз
+            # был бы не про то же самое, что сравниваем.
+            pronostico_dias = _cache_pronostico_panaderia_pasteleria(
+                engine, lista_fechas_plan[0], lista_fechas_plan[-1], sucursal_filtro,
+            )
+            pronostico_por_fecha = {d["fecha"]: d["pronostico_unidades"] for d in pronostico_dias}
+            df_plan_fisico["pronostico"] = df_plan_fisico["fecha"].map(pronostico_por_fecha)
+
+            largo_pf = df_plan_fisico.melt(
+                id_vars=["fecha"], value_vars=["plan", "real", "pronostico"],
+                var_name="serie", value_name="valor",
+            ).dropna(subset=["valor"])
+            largo_pf["serie"] = largo_pf["serie"].map(
+                {"plan": "План (бумага)", "real": "Факт", "pronostico": "Прогноз"},
+            )
+            orden_series_pf = ["Факт", "Прогноз", "План (бумага)"]
+            grafico_pf = alt.Chart(largo_pf).mark_line(point=True, strokeWidth=2.5).encode(
+                x=alt.X("fecha:T", title=None),
+                y=alt.Y("valor:Q", title="Штук (Panadería + Pastelería)"),
+                color=alt.Color(
+                    "serie:N", title=None, sort=orden_series_pf,
+                    scale=alt.Scale(domain=orden_series_pf,
+                                     range=[COLOR_PRIMARIO, COLOR_TIPICO, COLOR_SECUNDARIO]),
+                    legend=alt.Legend(orient="bottom"),
+                ),
+                strokeDash=alt.StrokeDash(
+                    "serie:N", sort=orden_series_pf,
+                    scale=alt.Scale(domain=orden_series_pf, range=[[1, 0], [5, 4], [2, 2]]),
+                    legend=None,
+                ),
+                tooltip=[
+                    alt.Tooltip("fecha:T", title="Дата"),
+                    alt.Tooltip("serie:N", title="Ряд"),
+                    alt.Tooltip("valor:Q", title="Штук", format=",.0f"),
+                ],
+            ).properties(height=300)
+            st.altair_chart(grafico_pf, width="stretch")
+
+            con_ambos = [d for d in comparacion_dia if d["real"] is not None]
+            if con_ambos:
+                suma_plan = sum(d["plan"] for d in con_ambos)
+                suma_real = sum(d["real"] for d in con_ambos)
+                delta_total = 100 * (suma_real - suma_plan) / suma_plan if suma_plan else 0.0
+                texto_resumen = (
+                    f"За {len(con_ambos)} дней: по бумажному плану должно "
+                    f"было выйти {suma_plan:,.0f} шт, реально продано "
+                    f"{suma_real:,.0f} шт ({delta_total:+.1f}%)."
+                )
+                suma_pronostico = sum(
+                    pronostico_por_fecha[d["fecha"]] for d in con_ambos
+                    if pronostico_por_fecha.get(d["fecha"]) is not None
+                )
+                if suma_pronostico:
+                    delta_pron = 100 * (suma_real - suma_pronostico) / suma_pronostico
+                    texto_resumen += (
+                        f" Свой прогноз по истории ожидал {suma_pronostico:,.0f} шт "
+                        f"({delta_pron:+.1f}% от факта)."
+                    )
+                st.write(texto_resumen)
+            st.caption(
+                "«План» здесь -- не тот же ручной план, что в таблице выше "
+                "(тот -- только Panadería, задаётся отдельно в "
+                "самом дашборде); это то, что реально было написано на "
+                "бумаге на этот день."
+            )
+
+            # ---- По позициям меню -------------------------------------------------
+            # datos_prod уже посчитан выше (для метрики "Продано вне плана").
+            st.subheader("По позициям: где план разошёлся с фактом больше всего")
+            col_sobre, col_sub = st.columns(2)
+            with col_sobre:
+                st.write("📉 **Планируют больше, чем продают**")
+                if datos_prod["sobreproducidos"]:
+                    st.dataframe(
+                        pd.DataFrame(datos_prod["sobreproducidos"]).rename(columns={
+                            "platillo": "Позиция", "plan": "План, шт",
+                            "real": "Факт, шт", "diff": "План − факт",
+                        }),
+                        width="stretch", hide_index=True,
+                    )
+            with col_sub:
+                st.write("📈 **Продают больше, чем планируют**")
+                if datos_prod["subproducidos"]:
+                    st.dataframe(
+                        pd.DataFrame(datos_prod["subproducidos"]).rename(columns={
+                            "platillo": "Позиция", "plan": "План, шт",
+                            "real": "Факт, шт", "diff": "План − факт",
+                        }),
+                        width="stretch", hide_index=True,
+                    )
+            st.caption(
+                f"Сумма за весь период ({len(lista_fechas_plan)} "
+                f"дней). Из {datos_prod['n_emparejados']} позиций, которые "
+                f"есть и в бумажном плане, и в реальных продажах."
+            )
+
+            if datos_prod["solo_en_plan"] or datos_prod["solo_en_real"]:
+                with st.expander("Позиции, которые не удалось сопоставить"):
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.write("Есть в плане, не найдено в продажах")
+                        if datos_prod["solo_en_plan"]:
+                            st.dataframe(
+                                pd.DataFrame(datos_prod["solo_en_plan"]).rename(
+                                    columns={"platillo": "Позиция", "plan": "План, шт"},
+                                ),
+                                width="stretch", hide_index=True,
+                            )
+                    with col_b:
+                        st.write("Есть в продажах, не найдено в плане")
+                        if datos_prod["solo_en_real"]:
+                            st.dataframe(
+                                pd.DataFrame(datos_prod["solo_en_real"]).rename(
+                                    columns={"platillo": "Позиция", "real": "Факт, шт"},
+                                ),
+                                width="stretch", hide_index=True,
+                            )
+                    st.caption(
+                        "Не значит «не производилось» или «не продавалось» -- "
+                        "иногда это просто другое написание названия в кассе "
+                        "или в бумажном плане, которое не удалось сопоставить "
+                        "автоматически."
+                    )
 
 
 # =============================================================================
 page = st.sidebar.radio(
     "Раздел",
     ["Главная", "Cafeteria", "Продажи по часам", "Топ товаров",
-     "Планирование", "Настройки"],
+     "Планирование", "Бонусная программа", "Настройки"],
     index=0,
     # key, а не просто index -- чтобы кнопка "Разобрать этот день по
     # часам" на Главной (см. page_home) могла переключить раздел
@@ -2925,5 +3046,10 @@ elif page == "Топ товаров":
     page_top_productos()
 elif page == "Планирование":
     page_planificacion()
+elif page == "Бонусная программа":
+    # Отдельный модуль (dashboard_fidelidad.py): аналитика клиентов,
+    # баллов, касс и SMS-рассылки бонусной программы.
+    import dashboard_fidelidad
+    dashboard_fidelidad.page_fidelidad(engine, sucursal_filtro, _selector_rango_fechas)
 else:
     page_settings()

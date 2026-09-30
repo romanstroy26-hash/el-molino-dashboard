@@ -159,6 +159,92 @@ DIAS_SEMANA_RU = [
     "пятница", "суббота", "воскресенье",
 ]
 
+# Дательный падеж множественного числа ("по понедельникам") -- нужен для
+# texto_estacionalidad ниже. Не выводится суффиксом из именительного
+# падежа (среда -> средам, а не "средам" через простое окончание) --
+# только явным словарём.
+_DIAS_SEMANA_DATIVO_PL = {
+    "понедельник": "понедельникам", "вторник": "вторникам", "среда": "средам",
+    "четверг": "четвергам", "пятница": "пятницам", "суббота": "субботам",
+    "воскресенье": "воскресеньям",
+}
+
+
+def estacionalidad_semana(serie_dia: list[dict], campo: str = "ventas_totales") -> list[dict]:
+    """A partir de una serie DIARIA (lista de dicts con "fecha" ISO y
+    `campo` numérico -- p. ej. serie_por_periodo con granularidad "dia",
+    o serie_dia_resumen), agrupa por día de la semana y devuelve el
+    promedio de cada uno como ÍNDICE respecto al promedio general de toda
+    la serie (100 = igual al promedio, 85 = 15% por debajo). Pura -- no
+    toca la base, se prueba con datos de ejemplo como el resto de
+    funciones de aritmética de este archivo (_recortar_atipicos,
+    _percentil).
+
+    Por qué índice y no el valor crudo: el objetivo es responder "¿qué
+    día de la semana vende menos/más que un día cualquiera?", pregunta
+    que el valor en $ no responde directo (un lunes bajo en $ puede ser
+    normal si el negocio entero es chico esos días del rango elegido).
+    Requiere al menos 2 semanas de datos para cada día -- con menos, un
+    solo día atípico (feriado, cierre) domina el promedio de ese día de
+    semana sin que haya con qué compararlo."""
+    por_dia: dict[int, list[float]] = defaultdict(list)
+    for fila in serie_dia:
+        f = fila["fecha"]
+        f = dt.date.fromisoformat(f) if isinstance(f, str) else f
+        valor = fila.get(campo)
+        if valor is not None:
+            por_dia[f.weekday()].append(valor)
+
+    total_dias = sum(len(v) for v in por_dia.values())
+    if not total_dias:
+        return []
+    promedio_general = sum(v for vals in por_dia.values() for v in vals) / total_dias
+    if not promedio_general:
+        return []
+
+    salida = []
+    for i, nombre in enumerate(DIAS_SEMANA_RU):
+        vals = por_dia.get(i, [])
+        if len(vals) < 2:
+            continue
+        promedio_dia = sum(vals) / len(vals)
+        salida.append({
+            "dia_semana": nombre,
+            "indice": round(100 * promedio_dia / promedio_general, 1),
+            "n_dias": len(vals),
+        })
+    return salida
+
+
+_UMBRAL_INDICE_ESTACIONALIDAD = 8.0  # puntos de índice (100 = promedio) -- por debajo es ruido normal de semana a semana
+
+
+def texto_estacionalidad(indices: list[dict]) -> str | None:
+    """Una frase con el día más fuerte y el más débil de
+    estacionalidad_semana(), o None si ningún día se aparta lo
+    suficiente del promedio (_UMBRAL_INDICE_ESTACIONALIDAD) para que
+    valga la pena mencionarlo -- mismo criterio que
+    analizar_mezcla_categorias: silencio en vez de ruido cuando no hay
+    nada que decir."""
+    candidatos = [d for d in indices if abs(d["indice"] - 100) >= _UMBRAL_INDICE_ESTACIONALIDAD]
+    if not candidatos:
+        return None
+    mejor = max(candidatos, key=lambda d: d["indice"])
+    peor = min(candidatos, key=lambda d: d["indice"])
+    mejor_dat = _DIAS_SEMANA_DATIVO_PL[mejor["dia_semana"]]
+    peor_dat = _DIAS_SEMANA_DATIVO_PL[peor["dia_semana"]]
+    if mejor["dia_semana"] == peor["dia_semana"]:
+        signo = "выше" if mejor["indice"] > 100 else "ниже"
+        return (
+            f"По {mejor_dat} продажи обычно на "
+            f"{abs(mejor['indice'] - 100):.0f}% {signo} среднего дня."
+        )
+    return (
+        f"Сильнее всего продажи по {mejor_dat} (индекс {mejor['indice']:.0f}, "
+        f"т.е. на {mejor['indice'] - 100:+.0f}% к среднему дню), слабее всего -- по "
+        f"{peor_dat} (индекс {peor['indice']:.0f}, {peor['indice'] - 100:+.0f}%)."
+    )
+
 
 def ultima_carga(engine: Engine) -> str | None:
     """Cuándo se cargó el dato MÁS RECIENTE en la base (columna cargado_en,
@@ -674,6 +760,64 @@ def cafe_por_sucursal(engine: Engine, desde: str | None = None,
     return salida
 
 
+def comparacion_puntos_periodo(engine: Engine, sucursales: list[str], desde: str, hasta: str) -> list[dict]:
+    """Compara TODAS las sucursales lado a lado para el mismo periodo:
+    ventas, chequeo promedio, mezcla de categorías (Panadería/Pastelería/
+    Café/Остальное) y crecimiento vs el periodo INMEDIATAMENTE anterior
+    de la misma duración (mismo principio que las tarjetas KPI de
+    Cafeteria, generalizado a "toda la venta", no solo bebidas).
+
+    No es una consulta nueva: reutiliza serie_dia_resumen (misma fuente
+    que "Главная"/"comparacion_semanal") una vez por sucursal y suma
+    sobre el rango -- una VISTA comparativa de datos que el resto del
+    archivo ya calcula, no lógica de agregación nueva."""
+    dias = (dt.date.fromisoformat(hasta) - dt.date.fromisoformat(desde)).days + 1
+    desde_d = dt.date.fromisoformat(desde)
+    prev_hasta = (desde_d - dt.timedelta(days=1)).isoformat()
+    prev_desde = (desde_d - dt.timedelta(days=dias)).isoformat()
+
+    _CAMPOS_CATEGORIA = [
+        ("Panadería", "panaderia_pct"), ("Pastelería", "pasteleria_pct"),
+        ("Café", "cafe_pct"), ("Остальное", "otras_pct"),
+    ]
+
+    salida = []
+    for suc in sucursales:
+        serie = serie_dia_resumen(engine, desde, hasta, sucursal=suc)
+        serie_prev = serie_dia_resumen(engine, prev_desde, prev_hasta, sucursal=suc)
+
+        ventas = sum(d["ventas_totales"] for d in serie)
+        ordenes = sum(d["num_ordenes"] for d in serie)
+        unidades = sum(d["unidades_totales"] for d in serie)
+        ventas_prev = sum(d["ventas_totales"] for d in serie_prev)
+
+        # % de cada categoría sobre la SUMA del periodo, no el promedio de
+        # los % diarios -- mismo motivo que las tarjetas KPI de
+        # Cafeteria: un promedio de porcentajes distorsiona si los días
+        # tienen ventas muy distintas entre sí.
+        dinero_cat = {cat: 0.0 for cat, _ in _CAMPOS_CATEGORIA}
+        for d in serie:
+            for cat, campo in _CAMPOS_CATEGORIA:
+                dinero_cat[cat] += d[campo] / 100 * d["ventas_totales"]
+
+        fila = {
+            "sucursal": suc,
+            "ventas_totales": round(ventas, 2),
+            "num_ordenes": ordenes,
+            "cheque_promedio": round(ventas / ordenes, 2) if ordenes else 0.0,
+            "unidades_totales": round(unidades, 2),
+            "crecimiento_pct": _delta_pct(ventas, ventas_prev) if ventas_prev else None,
+        }
+        for cat, _ in _CAMPOS_CATEGORIA:
+            campo_pct = {"Panadería": "panaderia_pct", "Pastelería": "pasteleria_pct",
+                         "Café": "cafe_pct", "Остальное": "otras_pct"}[cat]
+            fila[campo_pct] = round(100 * dinero_cat[cat] / ventas, 1) if ventas else 0.0
+        salida.append(fila)
+
+    salida.sort(key=lambda r: -r["ventas_totales"])
+    return salida
+
+
 def _filtro_rango_sql(sucursal, desde, hasta):
     """Construye el fragmento WHERE + parámetros compartido por varias
     consultas de abajo (mismo patrón que serie_por_periodo)."""
@@ -1141,6 +1285,77 @@ def analizar_mezcla_categorias(resumen: dict) -> dict | None:
         "categoria": peor["categoria"], "pct": peor["pct"], "tipico_pct": peor["tipico_pct"],
         "dif_pt": peor["dif_pt"], "festivo": resumen.get("festivo"),
     }
+
+
+def generar_digest_dia(resumen: dict, comparacion: dict, mezcla: dict | None) -> list[str]:
+    """Junta señales YA calculadas (resumen_dia_con_tipico,
+    comparacion_semanal, analizar_mezcla_categorias) en frases cortas,
+    ordenadas por qué tan grande es el cambio -- para que "Главная"
+    pueda mostrar 2-4 hallazgos más notables ARRIBA de las tarjetas,
+    como un resumen de "qué cambió", en vez de obligar a leer cada
+    tarjeta/caption por separado para notar la misma señal. No hace
+    ninguna consulta nueva: es pura reorganización de datos que la
+    página ya trae para otra cosa -- función pura, se prueba con dicts
+    de ejemplo.
+
+    Cada hallazgo se guarda con su magnitud (para ordenar) y se
+    descarta si está por debajo del mismo umbral que ya usa cada señal
+    por separado en el resto del archivo (_UMBRAL_DESVIACION_PCT /
+    _UMBRAL_DIF_CATEGORIA_PT) -- no se inventa un criterio nuevo."""
+    hallazgos: list[tuple[float, str]] = []
+
+    if resumen.get("dia_cerrado"):
+        v = resumen.get("ventas_vs_tipico_pct")
+        if v is not None and abs(v) >= _UMBRAL_DESVIACION_PCT:
+            direccion = "выше" if v > 0 else "ниже"
+            hallazgos.append((
+                abs(v),
+                f"Выручка сегодня на {abs(v):.0f}% {direccion} типичного "
+                f"{resumen['dia_semana']}.",
+            ))
+
+    racha = resumen.get("racha")
+    if racha:
+        direccion = "выше" if racha["direccion"] == "por_encima" else "ниже"
+        hallazgos.append((
+            racha["dias"] * 3,  # x3: una racha de varios días pesa más que un cambio de un solo día
+            f"Уже {racha['dias']}-й день подряд {direccion} нормы -- похоже на "
+            f"тенденцию, а не разовый скачок.",
+        ))
+
+    if mezcla:
+        direccion = "выше" if mezcla["dif_pt"] > 0 else "ниже"
+        hallazgos.append((
+            abs(mezcla["dif_pt"]),
+            f"Доля «{mezcla['categoria']}» заметно {direccion} обычного: "
+            f"{mezcla['pct']:.1f}% против типичных {mezcla['tipico_pct']:.1f}% "
+            f"({mezcla['dif_pt']:+.1f} п.т.).",
+        ))
+
+    dvs = comparacion.get("dia_vs_semana_pasada") or {}
+    if dvs.get("disponible") and dvs.get("ventas_delta_pct") is not None:
+        v = dvs["ventas_delta_pct"]
+        if abs(v) >= _UMBRAL_DESVIACION_PCT:
+            direccion = "выросла" if v > 0 else "упала"
+            hallazgos.append((
+                abs(v),
+                f"Выручка {dvs['dia_semana_usada']} {direccion} на {abs(v):.0f}% "
+                f"к тому же дню прошлой недели.",
+            ))
+
+    svs = comparacion.get("semana_vs_semana_pasada") or {}
+    if svs.get("ventas_pasada"):
+        v = _delta_pct(svs["ventas_actual"], svs["ventas_pasada"])
+        if v is not None and abs(v) >= _UMBRAL_DESVIACION_PCT:
+            direccion = "выросла" if v > 0 else "упала"
+            hallazgos.append((
+                abs(v) * 1.2,  # semana pesa un poco más que un solo día -- señal más estable
+                f"Выручка за последние 7 дней {direccion} на {abs(v):.0f}% к "
+                f"предыдущим 7 дням.",
+            ))
+
+    hallazgos.sort(key=lambda h: -h[0])
+    return [texto for _, texto in hallazgos[:4]]
 
 
 def fechas_con_hora(engine: Engine, sucursal: str | None = None) -> list[str]:
