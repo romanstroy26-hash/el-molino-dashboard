@@ -42,12 +42,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import tiempo
-from db import DEFAULT_DB_PATH, get_engine, insert_lines, resumen_carga
-from extractors import wansoft
+from db import DEFAULT_DB_PATH, get_engine, insert_lines, insert_plan_fisico, resumen_carga
+from extractors import plan_fisico, wansoft
 
 HERE = Path(__file__).resolve().parent
 DB_PATH = HERE / DEFAULT_DB_PATH
 DATA_DIR = HERE / "data"
+
+# Planes de producción físicos (PDF, ver extractors/plan_fisico.py): una
+# subcarpeta por punto de venta, el NOMBRE de la subcarpeta es la sucursal
+# -- el PDF en sí no dice de forma confiable a qué punto pertenece. Poner
+# fotos nuevas aquí (o sincronizar aquí la carpeta de Drive del punto) es
+# la única acción manual que queda; el resto -- igual que con las ventas --
+# lo hace solo el vigilante.
+PLANES_DIR = DATA_DIR / "planes_produccion"
 
 # Файл-память: какие файлы уже загружены. Лежит рядом с данными, обычный
 # текст -- можно открыть и посмотреть, а если удалить, программа просто
@@ -130,6 +138,28 @@ def archivos_nuevos(estado: dict) -> list[Path]:
     return [p for p in buscar_archivos() if _huella(p) not in estado]
 
 
+def buscar_archivos_plan() -> list[tuple[Path, str]]:
+    """Todos los PDF de plan físico -- (ruta, sucursal), donde sucursal es
+    el nombre de la subcarpeta de PLANES_DIR que contiene el archivo (ver
+    comentario junto a PLANES_DIR)."""
+    if not PLANES_DIR.exists():
+        return []
+    encontrados = []
+    for carpeta_sucursal in sorted(PLANES_DIR.iterdir()):
+        if not carpeta_sucursal.is_dir():
+            continue
+        for p in sorted(carpeta_sucursal.glob("*.pdf")):
+            encontrados.append((p, carpeta_sucursal.name))
+    return encontrados
+
+
+def archivos_plan_nuevos(estado: dict) -> list[tuple[Path, str]]:
+    """Igual que archivos_nuevos(), para los PDF de plan físico. Comparte
+    el mismo diccionario `estado` que las ventas -- los nombres nunca
+    chocan (.pdf contra .xlsx), así que no hace falta un archivo aparte."""
+    return [(p, suc) for p, suc in buscar_archivos_plan() if _huella(p) not in estado]
+
+
 def procesar(engine, rutas: list[Path], estado: dict, sello: str,
              hablar: bool = True) -> tuple[int, list[str]]:
     """Грузит указанные файлы, обновляет память и возвращает
@@ -195,6 +225,61 @@ def procesar(engine, rutas: list[Path], estado: dict, sello: str,
     return cargados, lineas_log
 
 
+def procesar_planes(engine, archivos: list[tuple[Path, str]], estado: dict, sello: str,
+                     hablar: bool = True) -> tuple[int, list[str]]:
+    """Igual que procesar(), para los PDF de plan físico -- ver el
+    comentario de esa función sobre por qué es una sola función compartida
+    entre el run manual y el vigilante, y por qué se distingue error de
+    LECTURA (archivo malo, no reintentar) de error de ESCRITURA (base
+    caída, reintentar en el próximo ciclo)."""
+    lineas_log = []
+    cargados = 0
+
+    for path, sucursal in archivos:
+        huella = _huella(path)
+
+        try:
+            resultado = plan_fisico.extract(path)
+        except Exception as e:  # noqa: BLE001 -- error de LECTURA, no reintentar
+            # A diferencia de wansoft.extract (donde ValueError SIEMPRE
+            # significa "otro tipo de reporte"), aquí ValueError puede ser
+            # por nombre no reconocido O por tabla/columna TOTAL no
+            # encontrada dentro de un PDF con nombre válido -- son cosas
+            # distintas, no colapsar el mensaje, para que el registro diga
+            # cuál de las dos pasó.
+            motivo = str(e)
+            estado[huella] = {"resultado": f"не читается: {motivo}", "cuando": sello}
+            if hablar:
+                print(f"  пропуск  {path.name} -- {motivo}")
+            lineas_log.append(f"{sello}  пропуск (план) {path.name}: {motivo}")
+            continue
+
+        if resultado is None:  # _PRUEBA -- se ignora a propósito, no es un día real
+            estado[huella] = {"resultado": "prueba (ignorado)", "cuando": sello}
+            lineas_log.append(f"{sello}  пропуск (план, PRUEBA) {path.name}")
+            continue
+
+        try:
+            estado_carga = insert_plan_fisico(
+                engine, sucursal, resultado["fecha"], resultado["productos"],
+                archivo_origen=path.name, archivo_mtime=path.stat().st_mtime,
+            )
+        except Exception as e:  # noqa: BLE001 -- error de ESCRITURA, reintentar después
+            if hablar:
+                print(f"  ОШИБКА   {path.name}: {e}")
+            lineas_log.append(f"{sello}  ОШИБКА (план, повторим позже) {path.name}: {e}")
+            continue
+
+        estado[huella] = {"resultado": f"план {resultado['fecha']} ({sucursal}): {estado_carga}", "cuando": sello}
+        cargados += 1
+        if hablar:
+            print(f"  загружен (план) {path.name}: {resultado['fecha']} ({sucursal}) -> {estado_carga}")
+        lineas_log.append(f"{sello}  загружен (план) {path.name}: {resultado['fecha']} ({sucursal}) -> {estado_carga}")
+
+    _guardar_estado(estado)
+    return cargados, lineas_log
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -211,15 +296,27 @@ def main() -> None:
     print("=" * 60)
 
     nuevos = archivos_nuevos(estado)
-    if not nuevos:
+    nuevos_plan = archivos_plan_nuevos(estado)
+    if not nuevos and not nuevos_plan:
         print("\nНовых выгрузок нет.\n")
         _registrar([f"{sello}  новых выгрузок нет"])
         return
 
-    print(f"\nНайдено новых файлов: {len(nuevos)}\n")
     engine = get_engine(str(DB_PATH))
-    cargados, lineas_log = procesar(engine, nuevos, estado, sello)
-    lineas_log.insert(0, f"{sello}  запуск, новых файлов: {len(nuevos)}")
+    lineas_log = [f"{sello}  запуск, новых файлов: {len(nuevos)}, новых планов: {len(nuevos_plan)}"]
+    cargados = 0
+
+    if nuevos:
+        print(f"\nНайдено новых файлов (продажи): {len(nuevos)}\n")
+        c, l = procesar(engine, nuevos, estado, sello)
+        cargados += c
+        lineas_log += l
+
+    if nuevos_plan:
+        print(f"\nНайдено новых файлов (план): {len(nuevos_plan)}\n")
+        c, l = procesar_planes(engine, nuevos_plan, estado, sello)
+        cargados += c
+        lineas_log += l
 
     print(f"\nЗагружено файлов: {cargados}")
     print("\nЧто сейчас в базе:")

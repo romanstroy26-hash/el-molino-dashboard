@@ -8,6 +8,9 @@ Start.bat, без Autoload.bat, вообще без единого клика п
   - каждые 15 секунд смотрит в те же папки, что и auto_carga.py (data,
     "Загрузки", и всё из CARPETAS_EXTRA в .env) -- и грузит всё новое в
     базу;
+  - так же, каждые 15 секунд, смотрит в data/planes_produccion/<точка>/ --
+    там фото бумажного плана производства (PDF), по одной подпапке на
+    точку (имя подпапки = название точки);
   - если в .env настроена почта (см. correo.py) -- дополнительно, раз в
     15 минут, заходит и забирает вложения;
   - пишет, что происходило, в data/carga.log -- та же лента, что у
@@ -177,6 +180,15 @@ def bucle() -> None:
                     lineas.insert(0, f"{sello}  сторож увидел новых файлов: {len(nuevos)}")
                     auto_carga._registrar(lineas)
                     print(f"  загружено: {cargados}")
+
+                nuevos_plan = auto_carga.archivos_plan_nuevos(estado)
+                if nuevos_plan:
+                    sello = tiempo.sello_de_tiempo()
+                    print(f"\n[{tiempo.etiqueta()}] новых файлов плана: {len(nuevos_plan)}")
+                    cargados_plan, lineas_plan = auto_carga.procesar_planes(engine, nuevos_plan, estado, sello)
+                    lineas_plan.insert(0, f"{sello}  сторож увидел новых файлов плана: {len(nuevos_plan)}")
+                    auto_carga._registrar(lineas_plan)
+                    print(f"  загружено (план): {cargados_plan}")
             except Exception as e:  # noqa: BLE001 -- сторож не должен падать НИКОГДА:
                 # один сбойный цикл (сеть, временная недоступность базы)
                 # не должен останавливать всё наблюдение до утра.

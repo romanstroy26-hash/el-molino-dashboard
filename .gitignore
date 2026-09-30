@@ -8,8 +8,9 @@ el_molino.db-*
 # Сами выгрузки Wansoft -- это данные о продажах, не код.
 data/*.xlsx
 
+# Фото/PDF бумажного плана производства -- тоже данные, не код.
+data/planes_produccion/
+
 # Кэш Python.
 __pycache__/
 *.pyc
-.test-deps/
-.pytest_cache/

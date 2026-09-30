@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import Iterable
 
 from dotenv import load_dotenv
+
+import tiempo
 from sqlalchemy import (
     Column, DateTime, Float, Index, Integer, MetaData, String, Table,
     UniqueConstraint, create_engine, delete, func, select, text,
@@ -124,6 +126,39 @@ plan_produccion = Table(
 )
 
 
+# Plan de producción FÍSICO (papel/foto de cocina, PDF) -- reemplaza al
+# antiguo plan_fisico_ruso.py (importado una sola vez a mano). Ahora se
+# carga solo, igual que sales_lines: auto_carga.py/vigilar.py vigilan
+# data/planes_produccion/{sucursal}/ y meten aquí cada PDF nuevo (ver
+# extractors/plan_fisico.py e insert_plan_fisico más abajo).
+#
+# UNIDAD DE CARGA -- (sucursal, fecha), no archivo: un mismo día puede
+# tener varias fotos (revisión de la mañana, corrección al mediodía) y
+# el nombre de archivo no dice de forma confiable cuál es la más nueva
+# (comprobado a mano: el sufijo numérico "(2)" a veces es MÁS VIEJO que
+# el archivo sin sufijo). Por eso se guarda también archivo_mtime -- la
+# fecha de modificación del PDF de origen -- y insert_plan_fisico solo
+# sobrescribe un día si el archivo nuevo es más reciente que el que ya
+# está guardado, sin importar en qué orden el vigilante los procese.
+plan_fisico_produccion = Table(
+    "plan_fisico_produccion", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("sucursal", String, nullable=False),
+    Column("fecha", String, nullable=False),          # ISO 'YYYY-MM-DD'
+    Column("platillo", String, nullable=False),        # tal como aparece en el PDF, sin normalizar
+    Column("cantidad", Float, nullable=False),
+    Column("archivo_origen", String, nullable=False),
+    Column("archivo_mtime", Float, nullable=False),    # timestamp del PDF de origen -- ver comentario arriba
+    Column("cargado_en", String, nullable=False),
+    UniqueConstraint("sucursal", "fecha", "platillo", name="uq_plan_fisico_sucursal_fecha_platillo"),
+)
+
+INDICE_PLAN_FISICO = Index(
+    "ix_plan_fisico_sucursal_fecha",
+    plan_fisico_produccion.c.sucursal, plan_fisico_produccion.c.fecha,
+)
+
+
 def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
     """DATABASE_URL в .env (или в переменных окружения) -> облачная
     (или любая другая) база. Без неё -- локальный файл SQLite рядом."""
@@ -171,6 +206,7 @@ def _crear_indices(engine: Engine) -> None:
     "создать, если такого ещё нет", повторный запуск ничего не ломает."""
     for indice in INDICES:
         indice.create(bind=engine, checkfirst=True)
+    INDICE_PLAN_FISICO.create(bind=engine, checkfirst=True)
 
 
 def _seed_coffee_keywords(engine: Engine) -> None:
@@ -356,3 +392,85 @@ def set_plan_produccion(engine: Engine, filas: list[dict]) -> None:
             conn.execute(delete(plan_produccion).where(plan_produccion.c.fecha.in_(fechas)))
         if con_valor:
             conn.execute(plan_produccion.insert(), con_valor)
+
+
+def insert_plan_fisico(engine: Engine, sucursal: str, fecha: str,
+                        productos: dict[str, float], archivo_origen: str,
+                        archivo_mtime: float) -> str:
+    """Guarda un día de plan físico. Si ya había datos para (sucursal,
+    fecha) de un archivo MÁS NUEVO (archivo_mtime mayor), no hace nada --
+    así el orden en que el vigilante descubre los PDF no importa, siempre
+    gana la foto más reciente del día, sin importar el sufijo del nombre.
+    Devuelve "cargado", "reemplazado" o "ignorado (había uno más nuevo)"."""
+    cargado_en = tiempo.sello_de_tiempo()
+
+    with engine.begin() as conn:
+        existente = conn.execute(
+            select(func.max(plan_fisico_produccion.c.archivo_mtime)).where(
+                (plan_fisico_produccion.c.sucursal == sucursal)
+                & (plan_fisico_produccion.c.fecha == fecha)
+            )
+        ).scalar_one()
+        if existente is not None and existente >= archivo_mtime:
+            return "ignorado (había uno más nuevo)"
+
+        habia = conn.execute(
+            select(func.count()).select_from(plan_fisico_produccion).where(
+                (plan_fisico_produccion.c.sucursal == sucursal)
+                & (plan_fisico_produccion.c.fecha == fecha)
+            )
+        ).scalar_one()
+        conn.execute(
+            delete(plan_fisico_produccion).where(
+                (plan_fisico_produccion.c.sucursal == sucursal)
+                & (plan_fisico_produccion.c.fecha == fecha)
+            )
+        )
+        if productos:
+            conn.execute(plan_fisico_produccion.insert(), [
+                {
+                    "sucursal": sucursal, "fecha": fecha, "platillo": nombre,
+                    "cantidad": cantidad, "archivo_origen": archivo_origen,
+                    "archivo_mtime": archivo_mtime, "cargado_en": cargado_en,
+                }
+                for nombre, cantidad in productos.items()
+            ])
+        return "reemplazado" if habia else "cargado"
+
+
+def fechas_plan_fisico(engine: Engine, sucursal: str) -> list[str]:
+    sql = select(plan_fisico_produccion.c.fecha).where(
+        plan_fisico_produccion.c.sucursal == sucursal
+    ).distinct().order_by(plan_fisico_produccion.c.fecha)
+    with engine.connect() as conn:
+        return [r[0] for r in conn.execute(sql)]
+
+
+def get_plan_fisico_por_dia(engine: Engine, sucursal: str) -> dict[str, float]:
+    """fecha ISO -> total de piezas planeadas ese día (todas las posiciones
+    sumadas) -- lo que antes traía plan_fisico_ruso.PLAN_POR_DIA a mano."""
+    sql = (
+        select(plan_fisico_produccion.c.fecha, func.sum(plan_fisico_produccion.c.cantidad).label("total"))
+        .where(plan_fisico_produccion.c.sucursal == sucursal)
+        .group_by(plan_fisico_produccion.c.fecha)
+    )
+    with engine.connect() as conn:
+        return {r["fecha"]: r["total"] for r in conn.execute(sql).mappings()}
+
+
+def get_plan_fisico_por_producto(engine: Engine, sucursal: str, fechas: list[str]) -> dict[str, float]:
+    """nombre de producto (tal como aparece en el PDF) -> total de piezas
+    planeadas, sumado sobre `fechas` -- lo que antes traía
+    plan_fisico_ruso.PLAN_POR_PRODUCTO a mano."""
+    if not fechas:
+        return {}
+    sql = (
+        select(plan_fisico_produccion.c.platillo, func.sum(plan_fisico_produccion.c.cantidad).label("total"))
+        .where(
+            (plan_fisico_produccion.c.sucursal == sucursal)
+            & plan_fisico_produccion.c.fecha.in_(fechas)
+        )
+        .group_by(plan_fisico_produccion.c.platillo)
+    )
+    with engine.connect() as conn:
+        return {r["platillo"]: r["total"] for r in conn.execute(sql).mappings()}

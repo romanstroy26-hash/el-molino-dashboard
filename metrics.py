@@ -1857,12 +1857,13 @@ def _normaliza_nombre(s: str) -> str:
 
 
 def comparar_plan_fisico(engine: Engine, sucursal: str, plan_por_dia: dict[str, float]) -> list[dict]:
-    """Plan de producción FÍSICO (en papel, ver plan_fisico_ruso.py) contra
-    ventas reales -- Panadería + Pastelería juntas (así se plane en
-    papel, no solo Panadería como el resto de "Планирование"), excluyendo
-    "Bolsa*" (empaque, ver EXCLUIR_BOLSA_SQL). `plan_por_dia` -- fecha ISO
-    -> piezas planeadas (importado una sola vez de fotos/PDF, no viene de
-    la base -- ver plan_fisico_ruso.py).
+    """Plan de producción FÍSICO (en papel, foto/PDF) contra ventas reales
+    -- Panadería + Pastelería juntas (así se plane en papel, no solo
+    Panadería como el resto de "Планирование"), excluyendo "Bolsa*"
+    (empaque, ver EXCLUIR_BOLSA_SQL). `plan_por_dia` -- fecha ISO -> piezas
+    planeadas, ya agregado desde la tabla plan_fisico_produccion (ver
+    db.get_plan_fisico_por_dia; esa tabla se llena sola -- ver
+    extractors/plan_fisico.py y auto_carga.procesar_planes).
 
     Agregado en SQL (GROUP BY fecha), no fila por fila -- mismo motivo que
     el resto de funciones de este archivo con tablas grandes."""

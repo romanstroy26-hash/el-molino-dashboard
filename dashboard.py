@@ -47,12 +47,12 @@ import pandas as pd
 import streamlit as st
 
 from db import (
-    DEFAULT_DB_PATH, get_coffee_keywords, get_engine, get_plan_produccion,
+    DEFAULT_DB_PATH, fechas_plan_fisico, get_coffee_keywords, get_engine,
+    get_plan_fisico_por_dia, get_plan_fisico_por_producto, get_plan_produccion,
     replace_coffee_keywords, set_plan_produccion,
 )
 import clima
 import metrics
-import plan_fisico_ruso
 import tiempo
 
 # Палитра дашборда -- взята из образца (лесная зелень, тёплое золото,
@@ -381,15 +381,22 @@ def _cache_ultima_carga(_engine):
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
+def _cache_fechas_plan_fisico(_engine, sucursal):
+    return fechas_plan_fisico(_engine, sucursal)
+
+
+@st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_comparar_plan_fisico(_engine, sucursal):
-    return metrics.comparar_plan_fisico(_engine, sucursal, plan_fisico_ruso.PLAN_POR_DIA)
+    plan_por_dia = get_plan_fisico_por_dia(_engine, sucursal)
+    return metrics.comparar_plan_fisico(_engine, sucursal, plan_por_dia)
 
 
 @st.cache_data(ttl=CACHE_TTL_SEGUNDOS, show_spinner=False)
 def _cache_comparar_plan_fisico_por_producto(_engine, sucursal):
-    fechas = sorted(plan_fisico_ruso.PLAN_POR_DIA)
+    fechas = fechas_plan_fisico(_engine, sucursal)
+    plan_por_producto = get_plan_fisico_por_producto(_engine, sucursal, fechas)
     return metrics.comparar_plan_fisico_por_producto(
-        _engine, sucursal, fechas, plan_fisico_ruso.PLAN_POR_PRODUCTO, n=12,
+        _engine, sucursal, fechas, plan_por_producto, n=12,
     )
 
 
@@ -2650,11 +2657,12 @@ def page_planificacion():
     # ---- Физический план vs факт (бумажный план, только El Molino Ruso) -----
     # Не ручной план из таблицы выше (тот -- только Panadería, вводится в
     # самом дашборде) -- а РЕАЛЬНЫЙ план на бумаге, который на кухне уже
-    # ведут каждый день (фото/PDF из папки Google Диска, импортировано
-    # один раз 2026-09-29 -- см. plan_fisico_ruso.py, это не автопайплайн,
-    # новые даты сами не появятся). Panadería + Pastelería вместе (так и
-    # планируют на бумаге), без "Bolsa*" (упаковка). Существует только
-    # для точки "El Molino Ruso" -- там, где физически ведут этот план.
+    # ведут каждый день (фото/PDF из data/planes_produccion/<точка>/,
+    # подхватывается само -- см. extractors/plan_fisico.py и
+    # auto_carga.procesar_planes, тот же принцип, что и для файлов
+    # продаж). Panadería + Pastelería вместе (так и планируют на бумаге),
+    # без "Bolsa*" (упаковка). Существует только для точки "El Molino
+    # Ruso" -- там, где физически ведут этот план.
     st.subheader("Физический план vs факт (бумажный план, El Molino Ruso)")
     if sucursal_filtro != "El Molino Ruso":
         st.info(
@@ -2662,12 +2670,20 @@ def page_planificacion():
             "её в фильтре «Точка» слева, чтобы увидеть сравнение."
         )
     else:
-        fechas_plan_fisico = sorted(plan_fisico_ruso.PLAN_POR_DIA)
+        lista_fechas_plan = _cache_fechas_plan_fisico(engine, sucursal_filtro)
+        if not lista_fechas_plan:
+            st.info(
+                "Пока нет ни одной фотографии бумажного плана для этой "
+                "точки -- положи PDF в data/planes_produccion/El Molino "
+                "Ruso/, и через 15 секунд (пока работает сторож) данные "
+                "появятся здесь сами."
+            )
+            st.stop()
         st.caption(
-            f"Период {fechas_plan_fisico[0]} — {fechas_plan_fisico[-1]} "
-            f"-- фиксированный, по фотографиям бумажного плана за эти "
-            f"даты (не связан с «Диапазон дат» слева -- других дат "
-            f"просто нет, план физически не сфотографирован)."
+            f"Период {lista_fechas_plan[0]} — {lista_fechas_plan[-1]} "
+            f"-- по фотографиям бумажного плана за эти даты (не связан с "
+            f"«Диапазон дат» слева -- других дат просто нет, план "
+            f"физически не сфотографирован)."
         )
 
         # Самое прямое доказательство того, что кухня НЕ ограничена бумагой:
@@ -2699,7 +2715,7 @@ def page_planificacion():
         # физический план (Panadería + Pastelería вместе), иначе прогноз
         # был бы не про то же самое, что сравниваем.
         pronostico_dias = _cache_pronostico_panaderia_pasteleria(
-            engine, fechas_plan_fisico[0], fechas_plan_fisico[-1], sucursal_filtro,
+            engine, lista_fechas_plan[0], lista_fechas_plan[-1], sucursal_filtro,
         )
         pronostico_por_fecha = {d["fecha"]: d["pronostico_unidades"] for d in pronostico_dias}
         df_plan_fisico["pronostico"] = df_plan_fisico["fecha"].map(pronostico_por_fecha)
@@ -2787,7 +2803,7 @@ def page_planificacion():
                     width="stretch", hide_index=True,
                 )
         st.caption(
-            f"Сумма за весь период ({len(plan_fisico_ruso.PLAN_POR_DIA)} "
+            f"Сумма за весь период ({len(lista_fechas_plan)} "
             f"дней). Из {datos_prod['n_emparejados']} позиций, которые "
             f"есть и в бумажном плане, и в реальных продажах."
         )
