@@ -39,6 +39,12 @@ def totales_mejorados(_engine, sucursal, fecha: str, hoy: str):
     return tuple(salida)
 
 
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def dias_parciales(_engine, sucursal, hoy: str) -> frozenset:
+    """Días recientes (hoy incluido) cargados a medias: su última venta fue antes de las 19:00."""
+    return frozenset(pronostico.dias_incompletos(_engine, sucursal, dt.date.fromisoformat(hoy), incluir_hoy=True))
+
+
 def datos_por_hora_mejorados(engine, fecha: str, sucursal, datos_hora: dict) -> dict:
     """`datos_hora` de metrics.ventas_por_hora con la curva de pronóstico llevada al nivel del día de pronostico.py (el promedio histórico
     por hora no ve la racha reciente, el clima ni los festivos y por eso quedaba por debajo de las ventas). Si algo falla, se devuelve igual."""

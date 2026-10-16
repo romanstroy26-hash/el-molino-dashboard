@@ -53,6 +53,7 @@ from db import (
 )
 import clima
 import metrics
+import analisis_dinamica
 import pronostico_horas
 import tiempo
 
@@ -1512,6 +1513,13 @@ def page_dashboard():
             "«Напитки» (пунктирная линия) -- это ровно сумма трёх остальных: "
             "кофе + фраппе + остальные напитки, в любом измерении слева."
         )
+        _aviso_dinamica = analisis_dinamica.frases(
+            df.to_dict("records"),
+            {c: (_MEDIDAS["Выручка, $"]["columnas"][c], _MEDIDAS["Доля, % от продаж"]["columnas"][c]) for c in _KATEGORII_NAPITKOV},
+            ultimo_incompleto=hasta in pronostico_horas.dias_parciales(engine, sucursal_filtro, tiempo.hoy().isoformat()),
+        )
+        for _frase in _aviso_dinamica:
+            (st.info if _frase.startswith("⏳") else st.caption)(_frase)
 
 
         # ---- Сезонность: день недели ---------------------------------------

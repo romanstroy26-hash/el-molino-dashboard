@@ -173,13 +173,14 @@ def es_dia_incompleto(ultima_hora: float) -> bool:
     return ultima_hora < HORA_CIERRE_MINIMA
 
 
-def dias_incompletos(engine, sucursal: str | None, hoy: dt.date, dias: int = DIAS_REVISADOS) -> set:
+def dias_incompletos(engine, sucursal: str | None, hoy: dt.date, dias: int = DIAS_REVISADOS, incluir_hoy: bool = False) -> set:
     """Fechas de los últimos `dias` días anteriores a `hoy` que están cargadas a medias (última venta antes de las 19:00). Un día así no debe
-    entrar en el historial: su venta es una fracción y torcería el promedio del día de la semana y las partes de cada producto."""
+    entrar en el historial: su venta es una fracción y torcería el promedio del día de la semana y las partes de cada producto.
+    Con `incluir_hoy` también cuenta hoy (para marcar el último punto de los gráficos)."""
     from sqlalchemy import text
 
     sql = ("SELECT fecha, MAX(hora_cierre) AS ult FROM sales_lines WHERE hora_cierre IS NOT NULL AND hora_cierre != '' "
-           "AND fecha >= :d AND fecha < :h")
+           "AND fecha >= :d AND fecha " + ("<=" if incluir_hoy else "<") + " :h")
     params: dict = {"d": (hoy - dt.timedelta(days=dias)).isoformat(), "h": hoy.isoformat()}
     if sucursal:
         sql += " AND sucursal = :s"
