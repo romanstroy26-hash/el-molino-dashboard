@@ -53,6 +53,7 @@ from db import (
 )
 import clima
 import metrics
+import pronostico_horas
 import tiempo
 
 # Палитра дашборда -- взята из образца (лесная зелень, тёплое золото,
@@ -1140,13 +1141,13 @@ def page_home():
     col_manana, col_lider, col_plan = st.columns(3)
     with col_manana:
         manana = tiempo.hoy() + dt.timedelta(days=1)
-        pron_manana = _cache_pronostico_dia_total(engine, manana.isoformat(), sucursal_filtro)
+        pron_manana = pronostico_horas.pronostico_dia_total_mejorado(engine, manana.isoformat(), sucursal_filtro)
         if pron_manana:
             st.metric(
                 f"📅 Ожидается завтра ({pron_manana['dia_semana']})",
                 f"{pron_manana['ventas_totales']:,.0f} $",
             )
-            st.caption(f"~{pron_manana['unidades']:,.0f} шт (прогноз по истории)")
+            st.caption(f"~{pron_manana['unidades']:,.0f} шт (прогноз: история, последние 7 дней, погода, праздники)")
         else:
             st.caption("📅 Прогноз на завтра: пока недостаточно истории.")
 
@@ -1166,7 +1167,25 @@ def page_home():
         # точкам сразу, см. страницу "Планирование"), и только если план
         # на ЭТОТ день уже кем-то введён -- иначе плитка пустая, незачем
         # показывать "плана нет" на каждой дате.
-        if sucursal_filtro:
+        if sucursal_filtro == "El Molino Ruso":
+            # Бумажный план из PDF (plan_fisico_produccion), Panadería + Pastelería -- ручная таблица ниже пуста, её тут мало кто ведёт.
+            fila_papel = next((f for f in _cache_comparar_plan_fisico(engine, sucursal_filtro) if f["fecha"] == fecha_elegida), None)
+            if fila_papel:
+                st.metric(
+                    "📋 Бумажный план на этот день",
+                    f"{fila_papel['plan']:,.0f} шт",
+                    delta=(f"продано {fila_papel['real']:,.0f} шт ({fila_papel['delta_pct']:+.0f}%)"
+                           if fila_papel["real"] is not None and fila_papel["delta_pct"] is not None else None),
+                    delta_color="off",
+                    help="Pan + Pastelería без пакетов: сколько напечено по бумажному плану и сколько продано.",
+                )
+            else:
+                ultimo_papel = (_cache_fechas_plan_fisico(engine, sucursal_filtro) or [None])[-1]
+                st.caption(
+                    "📋 Бумажного плана на этот день нет в системе"
+                    + (f" (последний загруженный -- {ultimo_papel}). Положи PDF в data/planes_produccion/El Molino Ruso/." if ultimo_papel else ".")
+                )
+        elif sucursal_filtro:
             plan_filas = get_plan_produccion(engine, fecha_elegida, fecha_elegida)
             if plan_filas:
                 plan_valor = plan_filas[0]["unidades_plan"]
@@ -1182,13 +1201,13 @@ def page_home():
                 )
 
     st.markdown("**Прогноз и факт по часам**")
-    datos_hora = _cache_ventas_por_hora(engine, fecha_elegida, sucursal_filtro)
+    datos_hora = pronostico_horas.datos_por_hora_mejorados(
+        engine, fecha_elegida, sucursal_filtro, _cache_ventas_por_hora(engine, fecha_elegida, sucursal_filtro))
     if datos_hora["n_dias_promedio"]:
         st.caption(
-            f"«Прогноз» -- по {datos_hora['n_dias_promedio']} прошлым дням "
-            f"с тем же днём недели ({datos_hora['dia_semana']}): недавние "
-            f"недели учтены сильнее старых, редкие всплески/провалы "
-            f"сглажены."
+            f"«Прогноз» -- форма дня по {datos_hora['n_dias_promedio']} прошлым дням "
+            f"с тем же днём недели ({datos_hora['dia_semana']}), уровень дня -- из улучшенного прогноза "
+            f"(последние 7 дней, погода, праздники)." + pronostico_horas.nota_de_escala(datos_hora)
         )
     df_hora = _grafico_por_hora(datos_hora, compacto=True, en_columnas=True)
     _bloque_analisis_dia(df_hora, fecha_elegida)
@@ -1979,15 +1998,15 @@ def page_por_hora():
         "День", fechas, index=len(fechas) - 1, key="hora_fecha",
     )
 
-    datos = _cache_ventas_por_hora(engine, fecha_elegida, sucursal_filtro)
+    datos = pronostico_horas.datos_por_hora_mejorados(
+        engine, fecha_elegida, sucursal_filtro, _cache_ventas_por_hora(engine, fecha_elegida, sucursal_filtro))
 
     st.subheader(f"{fecha_elegida} -- {datos['dia_semana']}")
     if datos["n_dias_promedio"]:
         st.caption(
-            f"«Прогноз» -- по {datos['n_dias_promedio']} прошлым дням с "
-            f"тем же днём недели ({datos['dia_semana']}), для которых есть "
-            f"время чека: недавние недели учтены сильнее старых, редкие "
-            f"всплески/провалы сглажены."
+            f"«Прогноз» -- форма дня по {datos['n_dias_promedio']} прошлым дням с тем же днём недели "
+            f"({datos['dia_semana']}), уровень дня -- из улучшенного прогноза (последние 7 дней, погода, праздники)."
+            + pronostico_horas.nota_de_escala(datos)
         )
     else:
         st.caption(

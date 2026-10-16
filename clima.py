@@ -83,6 +83,31 @@ def clima_dia(fecha: str) -> dict | None:
     }
 
 
+def temperaturas(desde: dt.date, hoy: dt.date) -> dict:
+    """{fecha: temp_max °C} desde `desde` hasta unos 15 días después de `hoy`, para el pronóstico de ventas (pronostico.py).
+
+    Lo viejo viene del archivo histórico; los últimos 21 días reales y los días que vienen, de UNA llamada a la API de
+    pronóstico (el archivo se atrasa unos días). Sin internet devuelve lo que haya podido traer, o {}: el pronóstico sigue
+    funcionando, solo sin la corrección por temperatura."""
+    resultado: dict = {}
+    corte = hoy - dt.timedelta(days=22)
+    for fila in clima_rango(desde.isoformat(), corte.isoformat()):
+        if fila.get("temp_max") is not None:
+            resultado[dt.date.fromisoformat(fila["fecha"])] = float(fila["temp_max"])
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={LATITUD}&longitude={LONGITUD}"
+        f"&daily=temperature_2m_max&timezone={ZONA_HORARIA}"
+        f"&past_days=21&forecast_days={_DIAS_PRONOSTICO_MAX + 1}"
+    )
+    datos = _pedir(url)
+    if datos and "daily" in datos:
+        for f, t in zip(datos["daily"].get("time", []), datos["daily"].get("temperature_2m_max", [])):
+            if t is not None:
+                resultado[dt.date.fromisoformat(f)] = float(t)
+    return resultado
+
+
 def clima_rango(desde: str, hasta: str) -> list[dict]:
     """Igual que clima_dia, pero para un RANGO completo en UNA sola
     llamada HTTP -- necesario para análisis de tendencia (¿se comportan
