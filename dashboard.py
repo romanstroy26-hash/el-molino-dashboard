@@ -1393,6 +1393,16 @@ def page_dashboard():
     )
     st.sidebar.caption(f"Данные есть с {fecha_min} по {fecha_max}")
 
+    # Неполный день (выгрузка сделана в середине дня) в графики не попадает: он тянет выручку вниз, а долю кофе вверх и выглядит как тренд.
+    _parciales = pronostico_horas.dias_parciales(engine, sucursal_filtro, tiempo.hoy().isoformat())
+    _omitidos = []
+    while hasta in _parciales and hasta >= desde:
+        _omitidos.append(hasta)
+        hasta -= dt.timedelta(days=1)
+    if hasta < desde:
+        st.info("В выбранном диапазоне только неполный день (данные за него выгружены не до конца) -- выберите диапазон шире.")
+        st.stop()
+
     # ---- Данные -------------------------------------------------------------
     filas = _cache_serie_por_periodo(
         engine, granularidad, sucursal_filtro, desde.isoformat(), hasta.isoformat(),
@@ -1516,10 +1526,12 @@ def page_dashboard():
         _aviso_dinamica = analisis_dinamica.frases(
             df.to_dict("records"),
             {c: (_MEDIDAS["Выручка, $"]["columnas"][c], _MEDIDAS["Доля, % от продаж"]["columnas"][c]) for c in _KATEGORII_NAPITKOV},
-            ultimo_incompleto=hasta in pronostico_horas.dias_parciales(engine, sucursal_filtro, tiempo.hoy().isoformat()),
         )
         for _frase in _aviso_dinamica:
-            (st.info if _frase.startswith("⏳") else st.caption)(_frase)
+            st.caption(_frase)
+        if _omitidos:
+            st.caption("⏳ Не показан неполный день: " + ", ".join(d.strftime("%d.%m") for d in reversed(_omitidos))
+                       + " (продажи за него выгружены не до конца; после полной загрузки он появится).")
 
 
         # ---- Сезонность: день недели ---------------------------------------
