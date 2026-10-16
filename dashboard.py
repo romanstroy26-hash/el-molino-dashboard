@@ -950,9 +950,20 @@ def page_home():
         )
         st.stop()
 
+    # Неполный день (выгрузка в середине дня) в выбор не попадает: страница открывается на последнем ЗАКРЫТОМ дне, а не на «обвале» за полдня.
+    _parciales = pronostico_horas.dias_parciales(engine, sucursal_filtro, tiempo.hoy().isoformat())
+    _omitidos = [f for f in fechas if dt.date.fromisoformat(f) in _parciales]
+    fechas = [f for f in fechas if f not in _omitidos]
+    if not fechas:
+        st.title(f"🏠 {nombre_punto}")
+        st.info("Пока есть только неполный день (данные за него выгружены не до конца). Загрузите полную выгрузку Wansoft -- тогда здесь появится сводка.")
+        st.stop()
     fecha_elegida = st.sidebar.selectbox(
         "День", fechas, index=len(fechas) - 1, key="home_fecha"
     )
+    if _omitidos:
+        st.sidebar.caption("⏳ Не показан неполный день: " + ", ".join(dt.date.fromisoformat(f).strftime("%d.%m") for f in _omitidos)
+                           + " (после полной загрузки он появится).")
 
     resumen = _cache_resumen_dia_con_tipico(engine, fecha_elegida, sucursal_filtro)
     comparacion = _cache_comparacion_semanal(engine, fecha_elegida, sucursal_filtro)
