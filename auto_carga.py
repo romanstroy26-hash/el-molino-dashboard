@@ -153,6 +153,26 @@ def buscar_archivos_plan() -> list[tuple[Path, str]]:
     return encontrados
 
 
+def guardar_subido(nombre: str, datos: bytes, carpeta: Path | None = None) -> Path:
+    """Guarda en la carpeta de datos un archivo subido desde el dashboard (carga manual, por si el vigilante no está corriendo).
+    Solo el nombre base y solo .xlsx; si ya hay uno con ese nombre y el mismo contenido, se reutiliza; si el contenido es distinto, se guarda
+    con " (n)" como hace Windows con las descargas repetidas."""
+    carpeta = Path(carpeta) if carpeta else DATA_DIR
+    base = Path(nombre.replace("\\", "/")).name
+    if not base.lower().endswith(".xlsx"):
+        raise ValueError("solo se aceptan archivos .xlsx de Wansoft")
+    carpeta.mkdir(parents=True, exist_ok=True)
+    destino = carpeta / base
+    n = 1
+    while destino.exists():
+        if destino.read_bytes() == datos:
+            return destino
+        destino = carpeta / f"{Path(base).stem} ({n}).xlsx"
+        n += 1
+    destino.write_bytes(datos)
+    return destino
+
+
 def archivos_plan_nuevos(estado: dict) -> list[tuple[Path, str]]:
     """Igual que archivos_nuevos(), para los PDF de plan físico. Comparte
     el mismo diccionario `estado` que las ventas -- los nombres nunca
@@ -237,6 +257,11 @@ def procesar_planes(engine, archivos: list[tuple[Path, str]], estado: dict, sell
 
     for path, sucursal in archivos:
         huella = _huella(path)
+
+        if "SEMANA" in path.name.upper():        # hoja semanal (Panadería/Decoración): solo da el FORMATO a plan_semanal.py, no es un plan diario
+            estado[huella] = {"resultado": "hoja semanal de formato (no se carga a la base)", "cuando": sello}
+            lineas_log.append(f"{sello}  hoja semanal de formato {path.name}: se usa como modelo de los planes semanales, no se carga a la base")
+            continue
 
         try:
             resultado = plan_fisico.extract(path)

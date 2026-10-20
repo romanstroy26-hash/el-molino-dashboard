@@ -53,9 +53,10 @@ from db import (
 )
 import clima
 import metrics
+import tiempo
 import analisis_dinamica
 import pronostico_horas
-import tiempo
+import ui_plan
 
 # Палитра дашборда -- взята из образца (лесная зелень, тёплое золото,
 # кремовый текст) и прогнана через валидатор скилла dataviz: пара
@@ -355,13 +356,18 @@ def _excel_plan_tarea(tarea: dict, sucursal_label: str) -> bytes:
         ws.append([f"{fila['hora']:02d}:00", fila["pct_historico"], fila["unidades_plan"]])
     ws.append([])
 
-    ws.append(["По позициям меню (топ-{})".format(len(tarea["por_producto"]))])
+    ws.append(["По позициям меню ({} в плане из {} за последние 90 дней; позиции, у которых доля меньше одного лотка, не вошли)".format(
+        len(tarea["por_producto"]), tarea.get("n_posiciones_historia", len(tarea["por_producto"])))])
     ws[f"A{ws.max_row}"].font = negrita
     ws.append(["Позиция", "Доля по истории, %", "План, шт"])
     for celda in ws[ws.max_row]:
         celda.font = negrita
     for fila in tarea["por_producto"]:
         ws.append([fila["platillo"], fila["pct_historico"], fila["unidades_plan"]])
+    suma_posiciones = sum(f["unidades_plan"] for f in tarea["por_producto"])
+    ws.append(["Итого по позициям", tarea.get("cobertura_pct"), suma_posiciones])
+    for celda in ws[ws.max_row]:
+        celda.font = negrita
 
     for col, ancho in zip("ABC", (30, 20, 12)):
         ws.column_dimensions[col].width = ancho
@@ -965,7 +971,7 @@ def page_home():
         st.sidebar.caption("⏳ Не показан неполный день: " + ", ".join(dt.date.fromisoformat(f).strftime("%d.%m") for f in _omitidos)
                            + " (после полной загрузки он появится).")
 
-    resumen = _cache_resumen_dia_con_tipico(engine, fecha_elegida, sucursal_filtro)
+    resumen =_cache_resumen_dia_con_tipico(engine, fecha_elegida, sucursal_filtro)
     comparacion = _cache_comparacion_semanal(engine, fecha_elegida, sucursal_filtro)
     # Считаем один раз здесь (а не заново внутри блока с карточками ниже) --
     # нужен и там (подпись под категориями), и в дайджесте наверху страницы.
@@ -1876,6 +1882,22 @@ def page_dashboard():
                     ],
                 ).properties(height=26 * len(df_top) + 20)
                 st.altair_chart(grafico_top, width="stretch")
+        # Встроенная кнопка графика «Show data» выходит из полноэкранного режима и показывает сырые названия колонок --
+        # свои таблицы (со значком «развернуть на весь экран» у самой таблицы) надёжнее.
+        with st.expander("Таблицы позиций (можно развернуть на весь экран)"):
+            for col, cat in zip(st.columns(3), _KAT_TOP):
+                with col:
+                    st.markdown(f"**{cat}**")
+                    if top_por_categoria[cat]:
+                        st.dataframe(
+                            pd.DataFrame(top_por_categoria[cat]).rename(columns={
+                                "platillo": "Позиция", "ventas": "Выручка, $", "unidades": "Штук",
+                                "pct_categoria": f"% от «{cat}»",
+                            }),
+                            hide_index=True, width="stretch",
+                        )
+                    else:
+                        st.caption("Нет продаж за этот диапазон.")
         st.caption(
             "Топ-6 позиций меню по выручке внутри каждой категории -- та же "
             "точка и диапазон дат, что и везде на странице. Помогает увидеть, "
@@ -2347,7 +2369,7 @@ def page_planificacion():
     st.caption(
         "Только категория «Panadería» (выпечка), в штуках. Три ряда: "
         "реальные продажи (закрытые дни), прогноз (по истории того же дня "
-        "недели -- тот же метод, что и на «Продажи по часам») и план "
+        "недели с поправкой на последние дни, погоду и праздники -- см. вкладку «Обучение системы») и план "
         "производства (вводится вручную в таблице ниже -- отдельного "
         "источника плана пока нет)."
     )
@@ -2442,8 +2464,8 @@ def page_planificacion():
             ),
         )
 
-    datos = _cache_panaderia_real_y_pronostico(
-        engine, desde.isoformat(), hasta.isoformat(), sucursal_filtro,
+    datos = ui_plan.cache_pronostico_mejorado(
+        engine, sucursal_filtro, hoy.isoformat(), desde.isoformat(), hasta.isoformat(),
     )
     df = pd.DataFrame(datos)
     for col in ("real_unidades", "pronostico_unidades"):
@@ -2457,9 +2479,9 @@ def page_planificacion():
     # en vez de una celda vacía. Forzar float64 corrige eso.
     df["unidades_plan"] = pd.to_numeric(df["fecha"].map(plan_por_fecha), errors="coerce")
 
-    tab_plan, tab_personal, tab_precision, tab_fisico = st.tabs([
+    tab_plan, tab_personal, tab_precision, tab_fisico, tab_aprende, tab_sobr, tab_dinero, tab_regla = st.tabs([
         "📊 План vs факт", "👥 Персонал",
-        "🎯 Точность прогноза", "📄 Физический план",
+        "🎯 Точность прогноза", "📄 Физический план", "🧠 Обучение системы", "📦 Остатки", "💰 Деньги", "📐 Регламент",
     ])
 
     with tab_plan:
@@ -2503,10 +2525,12 @@ def page_planificacion():
         st.altair_chart(grafico, width="stretch")
 
         st.caption(
-            "Прогноз -- взвешенное среднее по тем же дням недели за всю "
-            "историю (недавние недели весят больше, резкие всплески/провалы "
-            "сглажены -- тот же метод, что на «Продажи по часам»). Для будущих "
-            "дней реальных продаж ещё нет -- видны только прогноз и план."
+            "Прогноз -- взвешенное среднее по тем же дням недели (недавние "
+            "недели весят больше, всплески сглажены) с поправкой на последние "
+            "7 обычных дней, температуру и праздники. Для каждого ПРОШЕДШЕГО "
+            "дня он посчитан только по данным до этого дня, так что точность на "
+            "графике честная. Для будущих дней реальных продаж ещё нет -- видны "
+            "только прогноз и план."
         )
 
         # ---- Таблица с вводом плана -------------------------------------------
@@ -2540,44 +2564,15 @@ def page_planificacion():
             st.success("План сохранён.")
             st.rerun()
 
-        # ---- План-задание на день -- скачать -----------------------------------
-        st.subheader("План-задание на день -- скачать")
+        # ---- План на день (формат листа Google Sheets) -- скачать ---------------
+        st.subheader("План на день -- скачать (формат листа производства)")
         if sucursal_filtro is None:
             st.info(
-                "Выбери конкретную точку в фильтрах слева -- план-задание "
-                "составляется для ОДНОЙ точки (там своя кухня и своё "
-                "производство), а не для «Все точки» сразу."
+                "Выбери конкретную точку в фильтрах слева -- план составляется "
+                "для ОДНОЙ точки (там своя кухня и своё производство), а не для «Все точки» сразу."
             )
         else:
-            st.caption(
-                "Готовое задание на смену: сколько штук печь всего, по часам и "
-                "по позициям меню -- каждое число округлено ВВЕРХ до кратного "
-                "6 (партия/лоток выпечки, а не поштучно -- лучше немного "
-                "лишнего, чем недопечь целый лоток). Разбивка по часам и "
-                "позициям -- из фактического распределения за 90 дней ДО "
-                "выбранной даты; итог за день -- из ручного плана (см. таблицу "
-                "выше), а если его нет -- из прогноза."
-            )
-            fecha_tarea = st.date_input(
-                "На какое число план-задание", value=hoy + dt.timedelta(days=1),
-                min_value=fecha_min, key="plan_tarea_fecha",
-            )
-            tarea = _cache_plan_tarea_dia(engine, fecha_tarea.isoformat(), sucursal_filtro, 10, 6)
-            if tarea["total_dia"] is None:
-                st.info("Для этой даты нет ни плана, ни прогноза -- задание составить не из чего.")
-            else:
-                st.write(
-                    f"Итого на {fecha_tarea.isoformat()}: **{tarea['total_dia_redondeado']} шт** "
-                    f"(кратно 6; источник -- {tarea['fuente_total']}; до округления -- "
-                    f"{tarea['total_dia']:.0f} шт)."
-                )
-                excel_bytes = _excel_plan_tarea(tarea, opcion_sucursal)
-                st.download_button(
-                    "⬇️ Скачать план-задание (.xlsx)",
-                    data=excel_bytes,
-                    file_name=f"plan_tarea_{opcion_sucursal}_{fecha_tarea.isoformat()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+            ui_plan.seccion_plan_del_dia(engine, sucursal_filtro, hoy + dt.timedelta(days=1), fecha_min, hoy)
 
 
     with tab_personal:
@@ -3007,6 +3002,18 @@ def page_planificacion():
                         "автоматически."
                     )
 
+    with tab_aprende:
+        ui_plan.pestana_aprendizaje(engine, sucursal_filtro, hoy)
+
+    with tab_sobr:
+        ui_plan.pestana_sobrantes(engine, sucursal_filtro, hoy)
+
+    with tab_dinero:
+        ui_plan.pestana_dinero(engine, sucursal_filtro, hoy)
+
+    with tab_regla:
+        ui_plan.pestana_regla(engine, sucursal_filtro, hoy)
+
 
 # =============================================================================
 page = st.sidebar.radio(
@@ -3099,7 +3106,11 @@ elif page == "Планирование":
 elif page == "Бонусная программа":
     # Отдельный модуль (dashboard_fidelidad.py): аналитика клиентов,
     # баллов, касс и SMS-рассылки бонусной программы.
-    import dashboard_fidelidad
+    try:
+        import dashboard_fidelidad
+    except ImportError:             # el dashboard de la nube no incluye el módulo de fidelidad: que no se vea una pantalla de error
+        st.info("Этот раздел сейчас доступен только в версии на компьютере.")
+        st.stop()
     dashboard_fidelidad.page_fidelidad(engine, sucursal_filtro, _selector_rango_fechas)
 else:
     page_settings()

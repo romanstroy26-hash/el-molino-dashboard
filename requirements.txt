@@ -11,3 +11,4 @@ fastapi
 uvicorn[standard]
 httpx
 pytest
+pymupdf>=1.26,<2

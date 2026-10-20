@@ -195,6 +195,23 @@ def dias_incompletos(engine, sucursal: str | None, hoy: dt.date, dias: int = DIA
     return salida
 
 
+HORA_CIERRE_DIA = 20.5          # con una venta a las 20:30 o después el día ya está cerrado (los días completos del último trimestre acaban entre 20:34 y 21:07)
+
+
+def hora_ultima_venta(engine, sucursal: str | None, fecha: dt.date) -> float | None:
+    """Hora decimal de la última venta del día (None si no hay ventas con hora)."""
+    from sqlalchemy import text
+
+    sql = "SELECT MAX(hora_cierre) AS ult FROM sales_lines WHERE fecha = :f AND hora_cierre IS NOT NULL AND hora_cierre != ''"
+    params: dict = {"f": fecha.isoformat()}
+    if sucursal:
+        sql += " AND sucursal = :s"
+        params["s"] = sucursal
+    with engine.connect() as conn:
+        u = str(conn.execute(text(sql), params).scalar() or "")
+    return int(u[11:13]) + int(u[14:16]) / 60.0 if len(u) >= 16 else None
+
+
 def serie_diaria(engine, sucursal: str | None, categorias: tuple = ("PANADERIA",), excluir: set | frozenset = frozenset()) -> dict:
     """{fecha: unidades vendidas} de todo el historial de la sucursal (None = todas), sin bolsas. `excluir` = días cargados a medias
     (plan_propio.dias_incompletos): no entran, para no meter una venta parcial como si fuera un día entero."""

@@ -26,6 +26,7 @@ Postgres 16 -- одни и те же функции, один и тот же р�
 import datetime
 import math
 import os
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -159,6 +160,40 @@ INDICE_PLAN_FISICO = Index(
 )
 
 
+# Sobrantes al cierre: cuánto QUEDÓ sin vender de cada producto al cerrar, contado por una persona (página «Планирование», pestaña
+# «Остатки»). Con esto el sistema distingue «no se compró» de «se agotó» y ajusta el colchón de cada producto (plan_propio.py).
+# 0 = se agotó; sin fila = no se contó (no es lo mismo que 0).
+sobrantes_cierre = Table(
+    "sobrantes_cierre", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("sucursal", String, nullable=False),
+    Column("fecha", String, nullable=False),           # ISO 'YYYY-MM-DD' del día que cerró
+    Column("platillo", String, nullable=False),        # nombre del producto como se ve en la hoja de producción
+    Column("sobrante", Float),                         # piezas que quedaron; NULL = no se contó (pero sí se anotó otra cosa de la fila)
+    Column("registrado_en", String, nullable=False),
+    Column("horneado", Float),                         # piezas que de verdad se hornearon ese día (NULL = no se anotó)
+    Column("agotado_a", String),                       # 'HH:MM' en que se acabó, si se acabó (NULL = no se anotó)
+    UniqueConstraint("sucursal", "fecha", "platillo", name="uq_sobrantes_sucursal_fecha_platillo"),
+)
+
+
+# Merma al cierre importada del chat de WhatsApp («merma de hoy»). Por decisión del dueño, TODO lo que queda al cierre se tira: la lista de merma
+# ES el sobrante del día. Una fila con platillo '*' marca que ese día SÍ hubo reporte (así lo que no aparece en la lista cuenta como 0 y no como
+# «no se contó»). Va aparte de sobrantes_cierre (conteo manual) para que ninguna de las dos entradas pise a la otra.
+MARCA_DIA_CON_REPORTE = "*"
+merma_diaria = Table(
+    "merma_diaria", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("sucursal", String, nullable=False),
+    Column("fecha", String, nullable=False),           # ISO 'YYYY-MM-DD' del día al que se refiere la merma
+    Column("platillo", String, nullable=False),        # producto de la hoja, o '*' (marca de día con reporte)
+    Column("cantidad", Float, nullable=False),
+    Column("origen", String),                          # p. ej. 'whatsapp ~ Oscar 21:28'
+    Column("registrado_en", String, nullable=False),
+    UniqueConstraint("sucursal", "fecha", "platillo", name="uq_merma_sucursal_fecha_platillo"),
+)
+
+
 def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
     """DATABASE_URL в .env (или в переменных окружения) -> облачная
     (или любая другая) база. Без неё -- локальный файл SQLite рядом."""
@@ -178,7 +213,20 @@ def get_engine(db_path: str = DEFAULT_DB_PATH) -> Engine:
     _migrate_schema(engine)
     _crear_indices(engine)
     _seed_coffee_keywords(engine)
+    _proteger_tablas_del_plan(engine)
     return engine
+
+
+def _proteger_tablas_del_plan(engine: Engine) -> None:
+    """Supabase publica cada tabla por su API: ROW LEVEL SECURITY sin políticas la cierra (la programa se conecta como dueño y no le afecta)."""
+    if engine.dialect.name != "postgresql":
+        return
+    for tabla in ("sobrantes_cierre", "merma_diaria"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE "{tabla}" ENABLE ROW LEVEL SECURITY'))
+        except Exception as error:  # noqa: BLE001 -- la protección no debe impedir abrir el dashboard
+            print(f"AVISO: no se pudo activar RLS en {tabla}: {error}")
 
 
 def _migrate_schema(engine: Engine) -> None:
@@ -474,3 +522,75 @@ def get_plan_fisico_por_producto(engine: Engine, sucursal: str, fechas: list[str
     )
     with engine.connect() as conn:
         return {r["platillo"]: r["total"] for r in conn.execute(sql).mappings()}
+
+
+def get_sobrantes(engine: Engine, sucursal: str, desde: str | None = None, hasta: str | None = None) -> list[dict]:
+    sql = select(sobrantes_cierre).where(sobrantes_cierre.c.sucursal == sucursal).order_by(sobrantes_cierre.c.fecha)
+    if desde:
+        sql = sql.where(sobrantes_cierre.c.fecha >= desde)
+    if hasta:
+        sql = sql.where(sobrantes_cierre.c.fecha <= hasta)
+    with engine.connect() as conn:
+        return [dict(r) for r in conn.execute(sql).mappings()]
+
+
+def set_sobrantes(engine: Engine, sucursal: str, fecha: str, filas: list[dict], registrado_en: str) -> int:
+    """Guarda el cierre de un día: reemplaza TODO lo que había de (sucursal, fecha). `filas` = [{"platillo", "sobrante", "horneado",
+    "agotado_a"}]. Cada dato es opcional: una celda vacía (None/NaN) significa «no se anotó» y no se guarda; 0 sí se guarda (sobrante 0 =
+    se agotó). Una fila sin ningún dato no se guarda. `agotado_a` es 'HH:MM'. Devuelve cuántas filas quedaron."""
+    def numero(v):
+        if v is None or v == "":
+            return None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if (math.isnan(v) or v < 0) else v
+
+    def hora(v):
+        m = re.fullmatch(r"\s*(\d{1,2})[:.](\d{2})\s*", str(v)) if v is not None and v == v else None
+        return f"{int(m.group(1)):02d}:{m.group(2)}" if m and int(m.group(1)) < 24 and int(m.group(2)) < 60 else None
+
+    nuevas = []
+    for f in filas:
+        s, h, a = numero(f.get("sobrante")), numero(f.get("horneado")), hora(f.get("agotado_a"))
+        if s is None and h is None and a is None:
+            continue
+        nuevas.append({"sucursal": sucursal, "fecha": fecha, "platillo": f["platillo"], "sobrante": s, "horneado": h, "agotado_a": a,
+                       "registrado_en": registrado_en})
+    with engine.begin() as conn:
+        conn.execute(delete(sobrantes_cierre).where((sobrantes_cierre.c.sucursal == sucursal) & (sobrantes_cierre.c.fecha == fecha)))
+        if nuevas:
+            conn.execute(sobrantes_cierre.insert(), nuevas)
+    return len(nuevas)
+
+
+def get_merma(engine: Engine, sucursal: str, desde: str | None = None, hasta: str | None = None) -> list[dict]:
+    sql = select(merma_diaria).where(merma_diaria.c.sucursal == sucursal).order_by(merma_diaria.c.fecha)
+    if desde:
+        sql = sql.where(merma_diaria.c.fecha >= desde)
+    if hasta:
+        sql = sql.where(merma_diaria.c.fecha <= hasta)
+    with engine.connect() as conn:
+        return [dict(r) for r in conn.execute(sql).mappings()]
+
+
+def set_merma_dia(engine: Engine, sucursal: str, fecha: str, filas: list[dict], registrado_en: str, origen: str = "") -> int:
+    """Guarda el reporte de merma de UN día: reemplaza lo que había de (sucursal, fecha) y deja la marca de día con reporte. `filas` =
+    [{"platillo", "cantidad"}]; las cantidades del mismo producto se suman, las vacías/negativas/NaN se ignoran. Devuelve cuántos
+    productos quedaron (sin contar la marca)."""
+    acum: dict = {}
+    for f in filas:
+        try:
+            c = float(f.get("cantidad"))
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(c) or c <= 0 or not f.get("platillo") or f["platillo"] == MARCA_DIA_CON_REPORTE:
+            continue
+        acum[f["platillo"]] = acum.get(f["platillo"], 0.0) + c
+    nuevas = [{"sucursal": sucursal, "fecha": fecha, "platillo": MARCA_DIA_CON_REPORTE, "cantidad": 0.0, "origen": origen, "registrado_en": registrado_en}]
+    nuevas += [{"sucursal": sucursal, "fecha": fecha, "platillo": p, "cantidad": c, "origen": origen, "registrado_en": registrado_en} for p, c in acum.items()]
+    with engine.begin() as conn:
+        conn.execute(delete(merma_diaria).where((merma_diaria.c.sucursal == sucursal) & (merma_diaria.c.fecha == fecha)))
+        conn.execute(merma_diaria.insert(), nuevas)
+    return len(acum)
