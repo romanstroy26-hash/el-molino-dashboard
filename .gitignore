@@ -14,3 +14,6 @@ data/planes_produccion/
 # Кэш Python.
 __pycache__/
 *.pyc
+
+# Cachés y datos de ventas que genera el programa al correr: nunca van a GitHub.
+data/
