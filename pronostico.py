@@ -166,7 +166,7 @@ class Modelo:
 
 
 HORA_CIERRE_MINIMA = 19.0       # un día cuya última venta fue antes de esta hora quedó cargado a medias (la exportación se hizo en la mañana)
-DIAS_REVISADOS = 3
+DIAS_REVISADOS = 730           # todo el historial: un día que quedó cargado a medias (como el 16.10.2026, solo hasta las 09:36) no se corrige solo
 
 
 def es_dia_incompleto(ultima_hora: float) -> bool:

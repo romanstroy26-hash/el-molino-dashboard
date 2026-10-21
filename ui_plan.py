@@ -175,6 +175,12 @@ def _aviso_de_datos(engine, sucursal: str, hoy) -> None:
     msg = avisos.alerta_de_datos(ahora, ultima, bool(ayer))
     if msg:
         st.warning("⚠️ " + msg)
+    import pronostico
+    viejos = sorted(pronostico.dias_incompletos(engine, sucursal, hoy, dias=45))
+    if viejos:
+        st.warning("⚠️ Загружены не полностью (последняя продажа раньше 19:00): " + ", ".join(d.strftime("%d.%m") for d in viejos)
+                   + ". Эти дни не учитываются в прогнозе и плане -- выгрузите из Wansoft полный отчёт за них и загрузите (ниже или в папку data): "
+                     "прогноз станет точнее.")
     if avisos.vigilante_vivo() is False:
         st.error("Сторож (vigilar.py) не запущен: файлы Wansoft не загружаются сами. Запустите Vigilante.bat или загрузите файл вручную ниже.")
     with st.expander("Загрузить файл продаж Wansoft вручную (запасной вариант)", expanded=False):
