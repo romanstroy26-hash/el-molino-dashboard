@@ -95,7 +95,8 @@ def _bloque_semana(engine, hoy: dt.date, sensibilidad: float) -> None:
     c[2].metric("Продано", f"{r['ingreso']:,.0f} $", delta="Panadería + Pastelería", delta_color="off", help="Выручка кассы по хлебу и кондитерке за эти дни (без пакетов).")
     c[3].metric("Минут ниже 70%", f"{r['minutos_bajo']}", delta=f"вечер 19–21: {r['noche']:.0f}%" if r["noche"] is not None else None, delta_color="off",
                 help="Сколько минут за неделю витрина (после выкладки, до 21:00) была ниже 70%. Под цифрой -- средняя наполненность с 19:00 до 21:00.")
-    st.caption(f"Учтено дней: {r['dias']} (полные дни, по которым есть и камера, и касса). Считается по Panadería + Pastelería этой точки.")
+    st.caption(f"Учтено дней: {r['dias']} (полные дни, по которым есть и камера, и касса). Считается по Panadería + Pastelería этой точки."
+               + (" Не учтены -- камера работала не весь день: " + ", ".join(f"{d:%d.%m}" for d in r["sin_camara"]) + "." if r["sin_camara"] else ""))
     razbivka = pd.DataFrame([[nombre, _fmt(r[k]["llenado"]), f"{r[k]['perdida']:,.0f} $", f"{r[k]['pct']:.1%}", r[k]["minutos_bajo"]]
                              for nombre, k in (("До 20:30 (по регламенту витрина полная)", "antes"), ("20:30–21:00 (витрина сворачивается к закрытию)", "cierre"))],
                             columns=["Время", "Заполнение", "Недополучено, $", "Доля выручки", "Минут ниже 70%"])
@@ -175,6 +176,11 @@ def pagina(engine, sucursal) -> None:
     trs = datos[elegida]
     r = vn.resumen_dia(trs, umbral)
     st.subheader(f"{elegida:%d.%m.%Y}")
+    cob = vn.cobertura(trs)
+    if not cob["completa"] and elegida != hoy:
+        st.warning(f"⚠️ Камера работала не весь день: данные с {cob['desde']} по {cob['hasta']}"
+                   + (f", самый длинный перерыв {cob['hueco']} мин" if cob["hueco"] and cob["hueco"] > 30 else "")
+                   + ". Показатели этого дня неполные и в недельный расчёт не входят.")
     c = st.columns(4)
     c[0].metric("Заполнена к", r["llena_en"] or "—", help="Первый момент, когда витрина достигла 70% и выше после утренней выкладки.")
     c[1].metric("Средняя (после выкладки)", _fmt(r["promedio"]), help="Среднее до 21:00, начиная с момента, когда витрина была заполнена.")
@@ -211,7 +217,8 @@ def pagina(engine, sucursal) -> None:
                             legend=alt.Legend(orient="bottom")),
             tooltip=["День", "Час", alt.Tooltip("Наполненность, %:Q", format=".0f")]).properties(height=max(120, 22 * len(orden)))
         st.altair_chart(mapa, width="stretch")
-        st.caption("Каждая клетка -- средняя наполненность витрины в этот час этого дня. Красное/оранжевое -- пора выкладывать, зелёное -- полная.")
+        st.caption("Каждая клетка -- средняя наполненность витрины в этот час этого дня. Красное/оранжевое -- пора выкладывать, зелёное -- полная. "
+                   "Белые клетки -- данных камеры нет (программа «Vitrina» или компьютер в магазине были выключены); дни целиком без данных в таблице не показаны.")
 
     ph = vn.por_hora(completos)
     if ph:

@@ -128,6 +128,17 @@ def _minutos(hora: str) -> float:
     return int(h) * 60 + int(m)
 
 
+def cobertura(trs: list) -> dict:
+    """¿La cámara midió todo el día? {'completa': bool, 'desde': primera hora, 'hasta': última hora, 'hueco': hueco más largo en minutos}. Completa: empieza antes de las
+    08:30, termina después de las 20:30 y no tiene huecos de más de 30 minutos (si el programa o el computador de la tienda estuvo apagado, faltan datos)."""
+    if not trs:
+        return {"completa": False, "desde": None, "hasta": None, "hueco": None}
+    minutos = [_minutos(t["hora"]) for t in trs]
+    hueco = max((b - a for a, b in zip(minutos, minutos[1:])), default=0)
+    return {"completa": minutos[0] <= 8.5 * 60 and minutos[-1] >= HORA_REGLAMENTO * 60 and hueco <= 30,
+            "desde": trs[0]["hora"], "hasta": trs[-1]["hora"], "hueco": hueco}
+
+
 def resumen_dia(trs: list, umbral: float = UMBRAL_BAJO) -> dict | None:
     """Resumen de un día a partir de sus tramos. None si no hay tramos."""
     if not trs:
@@ -239,10 +250,13 @@ def perdida_dia(fecha: dt.date, trs: list, base: dict, sensibilidad: float = SEN
             "perdida_cierre": parte["cierre"][0], "minutos_cierre": parte["cierre"][1]}
 
 
-def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float = SENSIBILIDAD) -> dict | None:
+def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float = SENSIBILIDAD, solo_completos: bool = True) -> dict | None:
     """Resumen de varios días ({fecha: tramos}) con sus ingresos reales ({fecha: {hora: $}}): llenado medio, venta no lograda en $ y en %
     (la parte de la venta posible que no se vendió por vitrina baja)."""
-    usados = {d: t for d, t in dias.items() if t and d in ingresos}
+    def ok(t):
+        return not solo_completos or cobertura(t)["completa"]
+
+    usados = {d: t for d, t in dias.items() if t and d in ingresos and ok(t)}
     if not usados:
         return None
     suma_nivel = n_surtido = n_llena = n_noche = 0.0
@@ -276,7 +290,7 @@ def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float =
         bajos += p["minutos_bajo"]
     posible = real + perdida
     return {
-        "dias": len(usados), "llenado": suma_nivel / n_surtido if n_surtido else None, "tiempo_lleno": n_llena / n_surtido if n_surtido else None,
+        "dias": len(usados), "sin_camara": sorted(d for d, t in dias.items() if t and d in ingresos and not ok(t)), "llenado": suma_nivel / n_surtido if n_surtido else None, "tiempo_lleno": n_llena / n_surtido if n_surtido else None,
         "noche": noche_suma / n_noche if n_noche else None, "minutos_bajo": bajos,
         "ingreso": real, "perdida": perdida, "perdida_pct": perdida / posible if posible else 0.0,
         "detalle": detalle,
