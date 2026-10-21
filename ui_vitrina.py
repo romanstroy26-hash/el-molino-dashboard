@@ -1,4 +1,4 @@
-"""Página «Витрина» del dashboard: наполняемость витрины по камере (vitrina_nivel.py) рядом с продажами и правилом регламента «полная витрина до 20:30»."""
+"""Página «Витрина» del dashboard: наполняемость витрины по камере (vitrina_nivel.py) рядом с продажами и правилом регламента «полная витрина»."""
 
 from __future__ import annotations
 
@@ -77,15 +77,15 @@ def _bloque_semana(engine, hoy: dt.date, costo: float, sensibilidad: float) -> N
         return
     c = st.columns(4)
     c[0].metric("Заполнение за неделю", f"{r['llenado']:.0f}%", delta=f"{r['tiempo_lleno']:.0%} времени ≥{vn.LLENA:.0f}%", delta_color="off",
-                help="Средняя наполненность витрины после утренней выкладки и до 20:30 (100% = стол полный в обычный день).")
+                help="Средняя наполненность витрины после утренней выкладки и до 21:00 (100% = стол полный в обычный день).")
     c[1].metric("Недополученная прибыль", f"{r['perdida_pct']:.1%}", delta=f"≈ {r['utilidad_perdida']:,.0f} $", delta_color="off",
                 help="Доля возможной прибыли, не полученная из-за низкой витрины (с тем же процентом маржи это и доля выручки).")
     c[2].metric("Недополученная выручка", f"{r['perdida']:,.0f} $", delta=f"продано {r['ingreso']:,.0f} $", delta_color="off")
-    c[3].metric("Минут ниже 70%", f"{r['minutos_bajo']}", delta=f"вечер 19–20:30: {r['noche']:.0f}%" if r["noche"] is not None else None, delta_color="off")
+    c[3].metric("Минут ниже 70%", f"{r['minutos_bajo']}", delta=f"вечер 19–21: {r['noche']:.0f}%" if r["noche"] is not None else None, delta_color="off")
     st.caption(f"Учтено дней: {r['dias']} (полные дни, по которым есть и камера, и касса). Считается по Panadería + Pastelería этой точки.")
     with st.expander("Как считается и насколько этому можно верить"):
         st.write(
-            f"• За каждые 5 минут, когда витрина (после выкладки и до 20:30) была ниже {vn.LLENA:.0f}%, берётся обычная выручка этого часа (среднее по таким же дням "
+            f"• За каждые 5 минут, когда витрина (после выкладки и до 21:00) была ниже {vn.LLENA:.0f}%, берётся обычная выручка этого часа (среднее по таким же дням "
             f"недели за 8 недель) и вычитается та часть, которую витрина всё же продаёт: при {vn.LLENA:.0f}% и выше -- всё, при 35% -- половину, при 0% -- ничего "
             f"(чувствительность {sensibilidad:.1f}).\n\n"
             f"• Прибыль = выручка × (1 − себестоимость {costo:.0%}); при одинаковой марже процент недополученной прибыли равен проценту недополученной выручки.\n\n"
@@ -156,11 +156,11 @@ def pagina(engine, sucursal) -> None:
     st.subheader(f"{elegida:%d.%m.%Y}")
     c = st.columns(4)
     c[0].metric("Заполнена к", r["llena_en"] or "—", help="Первый момент, когда витрина достигла 70% и выше после утренней выкладки.")
-    c[1].metric("Средняя (после выкладки)", _fmt(r["promedio"]), help="Среднее до 20:30, начиная с момента, когда витрина была заполнена.")
-    c[2].metric("Вечер 19:00–20:30", _fmt(r["noche_promedio"]),
+    c[1].metric("Средняя (после выкладки)", _fmt(r["promedio"]), help="Среднее до 21:00, начиная с момента, когда витрина была заполнена.")
+    c[2].metric("Вечер 19:00–21:00", _fmt(r["noche_promedio"]),
                 delta=(f"{r['noche_llena_pct']:.0%} времени ≥{vn.LLENA:.0f}%" if r["noche_llena_pct"] is not None else None), delta_color="off",
-                help="Правило регламента: витрина полная до 20:30.")
-    c[3].metric("Ниже порога", f"{r['minutos_bajo']} мин", help=f"Минут с наполненностью ниже {umbral}% после выкладки и до 20:30.")
+                help="Правило регламента: витрина полная до закрытия.")
+    c[3].metric("Ниже порога", f"{r['minutos_bajo']} мин", help=f"Минут с наполненностью ниже {umbral}% после выкладки и до 21:00.")
     st.altair_chart(_grafico_dia(trs, _ventas_por_hora(engine, elegida.isoformat()), umbral), width="stretch")
     st.caption(f"Линия -- наполненность витрины (100% = стол полный в обычный день), красные пунктиры -- порог {umbral}% и «полная» {vn.LLENA:.0f}%; серые столбики -- "
                f"продано за час (касса). На закрытии ({r['cierre_hora']}) оставалось {r['cierre']:.0f}%.")
@@ -177,7 +177,7 @@ def pagina(engine, sucursal) -> None:
     tabla = pd.DataFrame([[f"{d:%d.%m}", r2["llena_en"] or "—", _fmt(r2["promedio"]), _fmt(r2["minimo"]), r2["minutos_bajo"],
                            _fmt(r2["noche_promedio"]), f"{r2['noche_llena_pct']:.0%}" if r2["noche_llena_pct"] is not None else "—",
                            f"{r2['cierre']:.0f}% ({r2['cierre_hora']})"] for d, r2 in sorted(resumenes.items(), reverse=True) if r2],
-                         columns=["День", "Заполнена к", "Средняя", "Минимум", "Мин. ниже порога", "Вечер 19–20:30", "Вечер ≥70% времени", "На закрытии"])
+                         columns=["День", "Заполнена к", "Средняя", "Минимум", "Мин. ниже порога", "Вечер 19–21", "Вечер ≥70% времени", "На закрытии"])
     st.dataframe(tabla, hide_index=True, width="stretch")
 
     calor = vn.mapa_calor(completos)

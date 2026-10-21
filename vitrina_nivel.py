@@ -7,8 +7,8 @@ el dashboard lee de la base.
 
 Definiciones (las mismas del programa de la cámara):
   - surtida: desde el primer tramo con 70 % o más; antes es el llenado de la mañana.
-  - «baja»: ya surtida, hasta las 20:30, con menos del límite de aviso (40 % por defecto).
-  - noche (indicador del reglamento «vitrina llena 19:00-20:30»): promedio y % del tiempo con 70 % o más entre las 19:00 y las 20:30.
+  - «baja»: ya surtida, hasta las 21:00 (cierre), con menos del límite de aviso (40 % por defecto).
+  - noche (indicador del reglamento «vitrina llena», contada hasta el cierre): promedio y % del tiempo con 70 % o más entre las 19:00 y las 21:00.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ URL_POR_DEFECTO = "http://desktop-s2gb4kk.tail68ad7b.ts.net:8095"
 TRAMO = 5                       # minutos por tramo guardado
 LLENA = 70.0                    # % que cuenta como vitrina llena
 UMBRAL_BAJO = 40.0              # % por debajo del cual hay que surtir
-HORA_FIN = 20.5                 # el reglamento: vitrina llena hasta las 20:30
-NOCHE = (19.0, 20.5)            # ventana del indicador del reglamento
+HORA_FIN = 21.0                 # se cuenta hasta el cierre (21:00); el reglamento pide vitrina llena hasta las 20:30, el dueño pidió medir hasta las 21:00
+NOCHE = (19.0, 21.0)            # ventana del indicador de la noche
 
 
 # ------------------------------------------------------------------------------------------------ lectura de la cámara
@@ -137,7 +137,7 @@ def resumen_dia(trs: list, umbral: float = UMBRAL_BAJO) -> dict | None:
     noche = [t for t in trs if NOCHE[0] * 60 <= _minutos(t["hora"]) < NOCHE[1] * 60]
     return {
         "llena_en": llena_en,
-        "promedio": sum(t["nivel"] for t in surtidos) / len(surtidos) if surtidos else None,       # ya surtida y hasta las 20:30
+        "promedio": sum(t["nivel"] for t in surtidos) / len(surtidos) if surtidos else None,       # ya surtida y hasta las 21:00
         "minimo": min((t["nivel"] for t in surtidos), default=None),
         "minutos_bajo": len(bajos) * TRAMO,
         "noche_promedio": sum(t["nivel"] for t in noche) / len(noche) if noche else None,
@@ -182,7 +182,7 @@ def frases_del_periodo(resumenes: dict, umbral: float = UMBRAL_BAJO) -> list:
     if noches:
         prom = sum(noches.values()) / len(noches)
         malos = sorted(d for d, v in noches.items() if v < umbral + 10)
-        frases.append(f"С 19:00 до 20:30 витрина в среднем заполнена на {prom:.0f}% (дней: {len(noches)}). Цель регламента -- полная (≥{LLENA:.0f}%) до 20:30.")
+        frases.append(f"С 19:00 до 21:00 витрина в среднем заполнена на {prom:.0f}% (дней: {len(noches)}). Цель регламента -- полная (≥{LLENA:.0f}%) до закрытия.")
         if malos:
             frases.append(f"Вечера с почти пустой витриной (в среднем меньше {umbral + 10:.0f}%): " + ", ".join(d.strftime("%d.%m") for d in malos) + ".")
     conbajo = {d: r["minutos_bajo"] for d, r in validos.items() if r["minutos_bajo"]}
@@ -220,7 +220,7 @@ def captura(nivel: float, sensibilidad: float = SENSIBILIDAD) -> float:
 
 
 def perdida_dia(fecha: dt.date, trs: list, base: dict, sensibilidad: float = SENSIBILIDAD) -> dict:
-    """{'perdida': $ no vendidos por vitrina baja, 'minutos_bajo': minutos con menos de 70 %}: solo después de surtir y antes de las 20:30."""
+    """{'perdida': $ no vendidos por vitrina baja, 'minutos_bajo': minutos con menos de 70 %}: solo después de surtir y antes de las 21:00."""
     import regla_vitrina as rv
 
     horas = base.get(rv.tipo_de_dia(fecha), {})

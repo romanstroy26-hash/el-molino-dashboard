@@ -754,8 +754,8 @@ def pestana_regla(engine, sucursal: str, hoy) -> None:
     if res:
         llena = sum(r["noche_llena_pct"] for r in res) / len(res)
         prom = sum(r["noche_promedio"] for r in res) / len(res)
-        st.metric("Витрина полная 19:00–20:30 (камера)", f"{llena:.0%} времени", delta=f"средняя {prom:.0f}%, дней: {len(res)}", delta_color="off",
-                  help=f"Доля времени с 19:00 до 20:30, когда витрина была заполнена на {vn.LLENA:.0f}% и больше (последние 14 дней). Подробности -- на странице «Витрина».")
+        st.metric("Витрина полная 19:00–21:00 (камера)", f"{llena:.0%} времени", delta=f"средняя {prom:.0f}%, дней: {len(res)}", delta_color="off",
+                  help=f"Доля времени с 19:00 до 21:00, когда витрина была заполнена на {vn.LLENA:.0f}% и больше (последние 14 дней). Подробности -- на странице «Витрина».")
 
 
 def _tabla_semana(sp) -> pd.DataFrame:
