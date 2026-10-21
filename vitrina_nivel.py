@@ -189,3 +189,83 @@ def frases_del_periodo(resumenes: dict, umbral: float = UMBRAL_BAJO) -> list:
     if conbajo:
         frases.append(f"Ниже {umbral:.0f}% после выкладки: " + ", ".join(f"{d:%d.%m} -- {m} мин" for d, m in sorted(conbajo.items())) + ".")
     return frases
+
+
+# ------------------------------------------------------------------------------------------------ pérdida por vitrina vacía
+
+SENSIBILIDAD = 1.0              # 1.0 = si la vitrina está al 35 % se pierde la mitad de lo que se vendería con ella llena (lineal hasta el 70 %)
+
+
+def base_de_ingresos(ingresos: dict, hoy: dt.date, semanas: int = 8) -> dict:
+    """{tipo de día: {hora entera: ingreso medio en esa hora}} con los días COMPLETOS de las últimas `semanas` semanas. `ingresos` = {fecha: {hora: $}}.
+    Es lo que se vende «normalmente» (casi siempre con la vitrina llena) y sirve de referencia de lo que se habría vendido."""
+    import regla_vitrina as rv
+
+    suma: dict = {}
+    dias: dict = {}
+    for d, horas in ingresos.items():
+        if d >= hoy or (hoy - d).days > semanas * 7:
+            continue
+        tipo = rv.tipo_de_dia(d)
+        dias[tipo] = dias.get(tipo, 0) + 1
+        for h, v in horas.items():
+            suma.setdefault(tipo, {})[h] = suma.setdefault(tipo, {}).get(h, 0.0) + v
+    return {tipo: {h: v / dias[tipo] for h, v in horas.items()} for tipo, horas in suma.items()}
+
+
+def captura(nivel: float, sensibilidad: float = SENSIBILIDAD) -> float:
+    """Qué parte de la venta normal se logra con la vitrina a ese nivel: 1 con 70 % o más; por debajo baja en línea recta (a 0 % no se vende nada
+    si sensibilidad = 1)."""
+    return max(0.0, min(1.0, 1.0 - sensibilidad * max(0.0, 1.0 - nivel / LLENA)))
+
+
+def perdida_dia(fecha: dt.date, trs: list, base: dict, sensibilidad: float = SENSIBILIDAD) -> dict:
+    """{'perdida': $ no vendidos por vitrina baja, 'minutos_bajo': minutos con menos de 70 %}: solo después de surtir y antes de las 20:30."""
+    import regla_vitrina as rv
+
+    horas = base.get(rv.tipo_de_dia(fecha), {})
+    llena_en = next((t["hora"] for t in trs if t["nivel"] >= LLENA), None)
+    perdida = 0.0
+    minutos = 0
+    for t in trs:
+        if not llena_en or t["hora"] < llena_en or _minutos(t["hora"]) >= HORA_FIN * 60 or t["nivel"] >= LLENA:
+            continue
+        minutos += TRAMO
+        perdida += horas.get(int(t["hora"][:2]), 0.0) * TRAMO / 60.0 * (1.0 - captura(t["nivel"], sensibilidad))
+    return {"perdida": perdida, "minutos_bajo": minutos}
+
+
+def resumen_semana(dias: dict, ingresos: dict, base: dict, costo: float, sensibilidad: float = SENSIBILIDAD) -> dict | None:
+    """Resumen de varios días ({fecha: tramos}) con sus ingresos reales ({fecha: {hora: $}}): llenado medio, pérdida en $ y en %.
+    La pérdida en % es la parte de la venta posible que no se vendió; con margen igual, es también el % de utilidad no ganada."""
+    usados = {d: t for d, t in dias.items() if t and d in ingresos}
+    if not usados:
+        return None
+    suma_nivel = n_surtido = n_llena = n_noche = 0.0
+    noche_suma = 0.0
+    perdida = real = 0.0
+    bajos = 0
+    detalle = {}
+    for d, trs in usados.items():
+        llena_en = next((t["hora"] for t in trs if t["nivel"] >= LLENA), None)
+        for t in trs:
+            if llena_en and t["hora"] >= llena_en and _minutos(t["hora"]) < HORA_FIN * 60:
+                suma_nivel += t["nivel"]
+                n_surtido += 1
+                n_llena += t["nivel"] >= LLENA
+            if NOCHE[0] * 60 <= _minutos(t["hora"]) < NOCHE[1] * 60:
+                noche_suma += t["nivel"]
+                n_noche += 1
+        p = perdida_dia(d, trs, base, sensibilidad)
+        ingreso = sum(ingresos[d].values())
+        detalle[d] = {"perdida": p["perdida"], "ingreso": ingreso, "minutos_bajo": p["minutos_bajo"]}
+        perdida += p["perdida"]
+        real += ingreso
+        bajos += p["minutos_bajo"]
+    posible = real + perdida
+    return {
+        "dias": len(usados), "llenado": suma_nivel / n_surtido if n_surtido else None, "tiempo_lleno": n_llena / n_surtido if n_surtido else None,
+        "noche": noche_suma / n_noche if n_noche else None, "minutos_bajo": bajos,
+        "ingreso": real, "perdida": perdida, "perdida_pct": perdida / posible if posible else 0.0,
+        "utilidad_perdida": perdida * (1 - costo), "utilidad_real": real * (1 - costo), "detalle": detalle,
+    }
