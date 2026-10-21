@@ -24,6 +24,7 @@ URL_POR_DEFECTO = "http://desktop-s2gb4kk.tail68ad7b.ts.net:8095"
 TRAMO = 5                       # minutos por tramo guardado
 LLENA = 70.0                    # % que cuenta como vitrina llena
 UMBRAL_BAJO = 40.0              # % por debajo del cual hay que surtir
+HORA_REGLAMENTO = 20.5            # el reglamento: vitrina llena hasta las 20:30; de 20:30 a 21:00 la vitrina se reduce a propósito
 HORA_FIN = 21.0                 # se cuenta hasta el cierre (21:00); el reglamento pide vitrina llena hasta las 20:30, el dueño pidió medir hasta las 21:00
 NOCHE = (19.0, 21.0)            # ventana del indicador de la noche
 
@@ -220,19 +221,22 @@ def captura(nivel: float, sensibilidad: float = SENSIBILIDAD) -> float:
 
 
 def perdida_dia(fecha: dt.date, trs: list, base: dict, sensibilidad: float = SENSIBILIDAD) -> dict:
-    """{'perdida': $ no vendidos por vitrina baja, 'minutos_bajo': minutos con menos de 70 %}: solo después de surtir y antes de las 21:00."""
+    """{'perdida': $ no vendidos por vitrina baja, 'minutos_bajo': minutos con menos de 70 %, más lo mismo separado en 'antes' (hasta las 20:30) y
+    'cierre' (20:30-21:00)}: solo después de surtir y antes de las 21:00."""
     import regla_vitrina as rv
 
     horas = base.get(rv.tipo_de_dia(fecha), {})
     llena_en = next((t["hora"] for t in trs if t["nivel"] >= LLENA), None)
-    perdida = 0.0
-    minutos = 0
+    parte = {"antes": [0.0, 0], "cierre": [0.0, 0]}
     for t in trs:
         if not llena_en or t["hora"] < llena_en or _minutos(t["hora"]) >= HORA_FIN * 60 or t["nivel"] >= LLENA:
             continue
-        minutos += TRAMO
-        perdida += horas.get(int(t["hora"][:2]), 0.0) * TRAMO / 60.0 * (1.0 - captura(t["nivel"], sensibilidad))
-    return {"perdida": perdida, "minutos_bajo": minutos}
+        p = parte["antes"] if _minutos(t["hora"]) < HORA_REGLAMENTO * 60 else parte["cierre"]
+        p[0] += horas.get(int(t["hora"][:2]), 0.0) * TRAMO / 60.0 * (1.0 - captura(t["nivel"], sensibilidad))
+        p[1] += TRAMO
+    return {"perdida": parte["antes"][0] + parte["cierre"][0], "minutos_bajo": parte["antes"][1] + parte["cierre"][1],
+            "perdida_antes": parte["antes"][0], "minutos_antes": parte["antes"][1],
+            "perdida_cierre": parte["cierre"][0], "minutos_cierre": parte["cierre"][1]}
 
 
 def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float = SENSIBILIDAD) -> dict | None:
@@ -245,6 +249,8 @@ def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float =
     noche_suma = 0.0
     perdida = real = 0.0
     bajos = 0
+    nivel_ventana = {"antes": [0.0, 0], "cierre": [0.0, 0]}
+    tot = {"perdida_antes": 0.0, "perdida_cierre": 0.0, "minutos_antes": 0, "minutos_cierre": 0}
     detalle = {}
     for d, trs in usados.items():
         llena_en = next((t["hora"] for t in trs if t["nivel"] >= LLENA), None)
@@ -253,12 +259,18 @@ def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float =
                 suma_nivel += t["nivel"]
                 n_surtido += 1
                 n_llena += t["nivel"] >= LLENA
+                v = nivel_ventana["antes"] if _minutos(t["hora"]) < HORA_REGLAMENTO * 60 else nivel_ventana["cierre"]
+                v[0] += t["nivel"]
+                v[1] += 1
             if NOCHE[0] * 60 <= _minutos(t["hora"]) < NOCHE[1] * 60:
                 noche_suma += t["nivel"]
                 n_noche += 1
         p = perdida_dia(d, trs, base, sensibilidad)
         ingreso = sum(ingresos[d].values())
-        detalle[d] = {"perdida": p["perdida"], "ingreso": ingreso, "minutos_bajo": p["minutos_bajo"]}
+        detalle[d] = {"perdida": p["perdida"], "ingreso": ingreso, "minutos_bajo": p["minutos_bajo"], "perdida_antes": p["perdida_antes"],
+                      "perdida_cierre": p["perdida_cierre"]}
+        for k in tot:
+            tot[k] += p[k]
         perdida += p["perdida"]
         real += ingreso
         bajos += p["minutos_bajo"]
@@ -268,4 +280,8 @@ def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float =
         "noche": noche_suma / n_noche if n_noche else None, "minutos_bajo": bajos,
         "ingreso": real, "perdida": perdida, "perdida_pct": perdida / posible if posible else 0.0,
         "detalle": detalle,
+        "antes": {"llenado": nivel_ventana["antes"][0] / nivel_ventana["antes"][1] if nivel_ventana["antes"][1] else None,
+                  "perdida": tot["perdida_antes"], "pct": tot["perdida_antes"] / posible if posible else 0.0, "minutos_bajo": tot["minutos_antes"]},
+        "cierre": {"llenado": nivel_ventana["cierre"][0] / nivel_ventana["cierre"][1] if nivel_ventana["cierre"][1] else None,
+                   "perdida": tot["perdida_cierre"], "pct": tot["perdida_cierre"] / posible if posible else 0.0, "minutos_bajo": tot["minutos_cierre"]},
     }
