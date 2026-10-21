@@ -13,6 +13,18 @@ import tiempo
 import vitrina_nivel as vn
 
 PUNTO = "El Molino Ruso"            # камера стоит только там
+
+AYUDA_PERIODO = ("Сколько последних дней показывать в нижней части страницы: таблица по дням, тепловая карта «день × час» и средняя наполненность по часам. "
+                 "Выбор дня и недели выше от этого фильтра не зависит. Больше дней -- спокойнее картина, меньше -- виднее свежие изменения.")
+AYUDA_UMBRAL = ("Наполненность, ниже которой витрину пора пополнять (100% = стол полный в обычный день). Что меняется: красная пунктирная линия на графике дня, "
+                "цифра «Ниже порога» (минуты после утренней выкладки и до 21:00, когда витрина была ниже порога), таблица по дням, фразы о периоде и цвета "
+                "тепловой карты. На недельный расчёт недополученной выручки НЕ влияет (там всегда считается всё, что ниже 70%).")
+AYUDA_SENS = ("Допущение модели: насколько сильно низкая витрина отпугивает покупателей. 1,0 -- ниже 70% продажи падают пропорционально: при 35% наполненности "
+              "теряется половина, при 0% -- всё. 0,5 -- вдвое мягче (покупатели берут то, что есть). 1,5 -- жёстче (при 35% теряется три четверти). "
+              "Проверить значение по данным нельзя: витрина почти всегда полная. Меняет только «Недополученную выручку» в недельном блоке.")
+AYUDA_SEMANA = ("За какой период считать недельный блок: «Последние 7 дней» (без сегодня) или календарная неделя с понедельника по воскресенье. Неполный сегодняшний день "
+                "и дни, где нет данных кассы или камеры, в расчёт не входят -- число учтённых дней написано под показателями.")
+AYUDA_DIA = ("Какой день показать на графике и в четырёх показателях ниже. Сегодняшний день ещё идёт, поэтому по умолчанию открывается последний закрытый.")
 COLOR_NIVEL = "#B07E22"
 COLOR_VENTAS = "#9AA5A0"
 COLOR_UMBRAL = "#C0392B"
@@ -59,38 +71,40 @@ def _semanas(primero: dt.date, hoy: dt.date) -> list:
     return opciones
 
 
-def _bloque_semana(engine, hoy: dt.date, costo: float, sensibilidad: float) -> None:
-    """Resumen de una semana: % de llenado y qué parte de la venta (y de la utilidad) se perdió por vitrina baja."""
-    st.subheader("Неделя: наполненность и недополученная прибыль")
+def _bloque_semana(engine, hoy: dt.date, sensibilidad: float) -> None:
+    """Resumen de una semana: % de llenado y qué parte de la venta no se logró por vitrina baja."""
+    st.subheader("Неделя: наполненность и недополученная выручка")
     datos = _dias(engine, (hoy - dt.timedelta(days=60)).isoformat(), hoy.isoformat())
     if not datos:
         return
     opciones = _semanas(min(datos), hoy)
-    elegida = st.selectbox("Неделя", range(len(opciones)), format_func=lambda i: opciones[i][0], key="vitrina_semana")
+    elegida = st.selectbox("Неделя", range(len(opciones)), format_func=lambda i: opciones[i][0], key="vitrina_semana", help=AYUDA_SEMANA)
     _, desde, hasta = opciones[elegida]
     ingresos = _ingresos_por_hora(engine, (hoy - dt.timedelta(days=70)).isoformat(), hoy.isoformat())
     base = vn.base_de_ingresos(ingresos, hoy)
     semana = {d: t for d, t in datos.items() if desde <= d <= hasta}
-    r = vn.resumen_semana(semana, ingresos, base, costo, sensibilidad)
+    r = vn.resumen_semana(semana, ingresos, base, sensibilidad)
     if r is None:
         st.info("За эту неделю нет полных дней с данными камеры и кассы.")
         return
     c = st.columns(4)
     c[0].metric("Заполнение за неделю", f"{r['llenado']:.0f}%", delta=f"{r['tiempo_lleno']:.0%} времени ≥{vn.LLENA:.0f}%", delta_color="off",
-                help="Средняя наполненность витрины после утренней выкладки и до 21:00 (100% = стол полный в обычный день).")
-    c[1].metric("Недополученная прибыль", f"{r['perdida_pct']:.1%}", delta=f"≈ {r['utilidad_perdida']:,.0f} $", delta_color="off",
-                help="Доля возможной прибыли, не полученная из-за низкой витрины (с тем же процентом маржи это и доля выручки).")
-    c[2].metric("Недополученная выручка", f"{r['perdida']:,.0f} $", delta=f"продано {r['ingreso']:,.0f} $", delta_color="off")
-    c[3].metric("Минут ниже 70%", f"{r['minutos_bajo']}", delta=f"вечер 19–21: {r['noche']:.0f}%" if r["noche"] is not None else None, delta_color="off")
+                help="Средняя наполненность витрины после утренней выкладки и до 21:00 (100% = стол полный в обычный день). Под цифрой -- какую долю этого времени витрина была полной (70% и выше).")
+    c[1].metric("Недополученная выручка", f"{r['perdida_pct']:.1%}", delta=f"≈ {r['perdida']:,.0f} $", delta_color="off",
+                help="Какая часть возможной выручки (продано + недополучено) не получена из-за низкой витрины, и сколько это в долларах. Расчёт и допущения -- в блоке «Как считается» ниже.")
+    c[2].metric("Продано", f"{r['ingreso']:,.0f} $", delta="Panadería + Pastelería", delta_color="off", help="Выручка кассы по хлебу и кондитерке за эти дни (без пакетов).")
+    c[3].metric("Минут ниже 70%", f"{r['minutos_bajo']}", delta=f"вечер 19–21: {r['noche']:.0f}%" if r["noche"] is not None else None, delta_color="off",
+                help="Сколько минут за неделю витрина (после выкладки, до 21:00) была ниже 70%. Под цифрой -- средняя наполненность с 19:00 до 21:00.")
     st.caption(f"Учтено дней: {r['dias']} (полные дни, по которым есть и камера, и касса). Считается по Panadería + Pastelería этой точки.")
     with st.expander("Как считается и насколько этому можно верить"):
         st.write(
             f"• За каждые 5 минут, когда витрина (после выкладки и до 21:00) была ниже {vn.LLENA:.0f}%, берётся обычная выручка этого часа (среднее по таким же дням "
             f"недели за 8 недель) и вычитается та часть, которую витрина всё же продаёт: при {vn.LLENA:.0f}% и выше -- всё, при 35% -- половину, при 0% -- ничего "
-            f"(чувствительность {sensibilidad:.1f}).\n\n"
-            f"• Прибыль = выручка × (1 − себестоимость {costo:.0%}); при одинаковой марже процент недополученной прибыли равен проценту недополученной выручки.\n\n"
+            f"(чувствительность {sensibilidad:.1f}). Остаток -- недополученная выручка.\n\n"
             "• Это оценка с допущением: данные не позволяют проверить связь «пустая витрина → меньше продаж» -- витрина почти всегда полная, а в диапазоне "
-            "70–100% продажи от наполненности не зависят. Чувствительность и себестоимость настраиваются слева.")
+            "70–100% продажи от наполненности не зависят. Чувствительность настраивается слева.\n\n"
+            "• Последние полчаса перед закрытием витрина пустеет по плану (остаток распродаётся), но модель считает это тоже потерей -- реальные потери ближе к цифре, "
+            "посчитанной до 20:30.")
         det = pd.DataFrame([[f"{d:%d.%m}", f"{v['ingreso']:,.0f}", f"{v['perdida']:,.0f}", v["minutos_bajo"]] for d, v in sorted(r["detalle"].items())],
                            columns=["День", "Выручка, $", "Недополучено, $", "Минут ниже 70%"])
         st.dataframe(det, hide_index=True, width="stretch")
@@ -132,25 +146,25 @@ def pagina(engine, sucursal) -> None:
         return
     hoy = tiempo.hoy()
     st.sidebar.header("Фильтры")
-    dias_n = st.sidebar.radio("Период", [7, 14, 30], index=1, format_func=lambda n: f"{n} дней", key="vitrina_periodo")
-    umbral = st.sidebar.slider("Порог «пора выкладывать», %", 10, 80, int(vn.UMBRAL_BAJO), 5, key="vitrina_umbral")
-    costo = st.sidebar.slider("Себестоимость, % от цены", 10, 80, 35, 5, key="vitrina_costo",
-                              help="Предположение (как на вкладке «Деньги»). Нужна, чтобы перевести недополученную выручку в прибыль.") / 100
-    sensibilidad = st.sidebar.slider("Как сильно пустая витрина снижает продажи", 0.5, 1.5, vn.SENSIBILIDAD, 0.1, key="vitrina_sens",
-                                     help="1.0 -- при 35% наполненности теряется половина продаж. Больше -- потери сильнее.")
+    dias_n = st.sidebar.radio("Период", [7, 14, 30], index=1, format_func=lambda n: f"{n} дней", key="vitrina_periodo", help=AYUDA_PERIODO)
+    umbral = st.sidebar.slider("Порог «пора выкладывать», %", 10, 80, int(vn.UMBRAL_BAJO), 5, key="vitrina_umbral", help=AYUDA_UMBRAL)
+    sensibilidad = st.sidebar.slider("Как сильно пустая витрина снижает продажи", 0.5, 1.5, vn.SENSIBILIDAD, 0.1, key="vitrina_sens", help=AYUDA_SENS)
+    with st.sidebar.expander("Что означают эти фильтры"):
+        st.markdown(f"**Период.** {AYUDA_PERIODO}\n\n**Порог.** {AYUDA_UMBRAL}\n\n**Как сильно пустая витрина снижает продажи.** {AYUDA_SENS}\n\n"
+                    f"**Неделя** (вверху страницы). {AYUDA_SEMANA}\n\n**День.** {AYUDA_DIA}")
     datos = _dias(engine, (hoy - dt.timedelta(days=dias_n)).isoformat(), hoy.isoformat())
     if not datos:
         st.info("Данных с камеры в базе пока нет. Программа «Vitrina» работает на компьютере в магазине; данные забирает задача синхронизации "
                 "(sync_nube) на главном компьютере -- для этого на нём должен быть включён Tailscale. Первые дни появятся здесь в течение 10 минут после включения.")
         return
 
-    _bloque_semana(engine, hoy, costo, sensibilidad)
+    _bloque_semana(engine, hoy, sensibilidad)
     st.divider()
 
     # --- последний день с данными (сегодняшний можно выбрать отдельно)
     fechas = sorted(datos)
     ultimo_completo = max((i for i, d in enumerate(fechas) if d != hoy), default=len(fechas) - 1)
-    elegida = st.selectbox("День", fechas, index=ultimo_completo, format_func=lambda d: f"{d:%d.%m} ({'сегодня, ещё идёт' if d == hoy else metrics.DIAS_SEMANA_RU[d.weekday()]})")
+    elegida = st.selectbox("День", fechas, index=ultimo_completo, help=AYUDA_DIA, format_func=lambda d: f"{d:%d.%m} ({'сегодня, ещё идёт' if d == hoy else metrics.DIAS_SEMANA_RU[d.weekday()]})")
     trs = datos[elegida]
     r = vn.resumen_dia(trs, umbral)
     st.subheader(f"{elegida:%d.%m.%Y}")

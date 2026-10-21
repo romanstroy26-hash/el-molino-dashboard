@@ -235,9 +235,9 @@ def perdida_dia(fecha: dt.date, trs: list, base: dict, sensibilidad: float = SEN
     return {"perdida": perdida, "minutos_bajo": minutos}
 
 
-def resumen_semana(dias: dict, ingresos: dict, base: dict, costo: float, sensibilidad: float = SENSIBILIDAD) -> dict | None:
-    """Resumen de varios días ({fecha: tramos}) con sus ingresos reales ({fecha: {hora: $}}): llenado medio, pérdida en $ y en %.
-    La pérdida en % es la parte de la venta posible que no se vendió; con margen igual, es también el % de utilidad no ganada."""
+def resumen_semana(dias: dict, ingresos: dict, base: dict, sensibilidad: float = SENSIBILIDAD) -> dict | None:
+    """Resumen de varios días ({fecha: tramos}) con sus ingresos reales ({fecha: {hora: $}}): llenado medio, venta no lograda en $ y en %
+    (la parte de la venta posible que no se vendió por vitrina baja)."""
     usados = {d: t for d, t in dias.items() if t and d in ingresos}
     if not usados:
         return None
@@ -267,5 +267,5 @@ def resumen_semana(dias: dict, ingresos: dict, base: dict, costo: float, sensibi
         "dias": len(usados), "llenado": suma_nivel / n_surtido if n_surtido else None, "tiempo_lleno": n_llena / n_surtido if n_surtido else None,
         "noche": noche_suma / n_noche if n_noche else None, "minutos_bajo": bajos,
         "ingreso": real, "perdida": perdida, "perdida_pct": perdida / posible if posible else 0.0,
-        "utilidad_perdida": perdida * (1 - costo), "utilidad_real": real * (1 - costo), "detalle": detalle,
+        "detalle": detalle,
     }
