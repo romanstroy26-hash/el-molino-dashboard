@@ -747,6 +747,16 @@ def pestana_regla(engine, sucursal: str, hoy) -> None:
         st.metric("Позиции группы A, закончившиеся до 20:30", f"{kpi['pct']:.0%}", delta=f"{kpi['agotados']} из {kpi['registros']} записей",
                   delta_color="off", help="Цель регламента -- около 0% по группе A.")
 
+    import vitrina_nivel as vn
+    camara = vn.leer(engine, "El Molino Ruso", hoy - dt.timedelta(days=14), hoy - dt.timedelta(days=1)) if sucursal == "El Molino Ruso" else {}
+    res = [vn.resumen_dia(t) for t in camara.values()]
+    res = [r for r in res if r and r["noche_llena_pct"] is not None]
+    if res:
+        llena = sum(r["noche_llena_pct"] for r in res) / len(res)
+        prom = sum(r["noche_promedio"] for r in res) / len(res)
+        st.metric("Витрина полная 19:00–20:30 (камера)", f"{llena:.0%} времени", delta=f"средняя {prom:.0f}%, дней: {len(res)}", delta_color="off",
+                  help=f"Доля времени с 19:00 до 20:30, когда витрина была заполнена на {vn.LLENA:.0f}% и больше (последние 14 дней). Подробности -- на странице «Витрина».")
+
 
 def _tabla_semana(sp) -> pd.DataFrame:
     """Vista en pantalla de un plan semanal (PlanSemana): una fila por posición, Mat/Vesp de cada día, opciones y reserva."""

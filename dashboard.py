@@ -3019,7 +3019,7 @@ def page_planificacion():
 page = st.sidebar.radio(
     "Раздел",
     ["Главная", "Cafeteria", "Продажи по часам", "Топ товаров",
-     "Планирование", "Бонусная программа", "Настройки"],
+     "Планирование", "Витрина", "Бонусная программа", "Настройки"],
     index=0,
     # key, а не просто index -- чтобы кнопка "Разобрать этот день по
     # часам" на Главной (см. page_home) могла переключить раздел
@@ -3103,6 +3103,10 @@ elif page == "Топ товаров":
     page_top_productos()
 elif page == "Планирование":
     page_planificacion()
+elif page == "Витрина":
+    # Наполненность витрины по камере (ui_vitrina.py; данные в базе кладёт sync_nube.py)
+    import ui_vitrina
+    ui_vitrina.pagina(engine, sucursal_filtro)
 elif page == "Бонусная программа":
     # Отдельный модуль (dashboard_fidelidad.py): аналитика клиентов,
     # баллов, касс и SMS-рассылки бонусной программы.
